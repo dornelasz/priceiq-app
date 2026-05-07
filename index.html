@@ -1,0 +1,1187 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"/>
+<meta name="theme-color" content="#070B14"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<title>PriceIQ</title>
+<style>
+/* Fonte inline — sem depender de Google Fonts para não travar */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{background:#070B14;color:#E8F0FE;font-family:'DM Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;overscroll-behavior:none;-webkit-text-size-adjust:100%}
+a,button,input,select,textarea{font-family:inherit}
+input:focus,select:focus{outline:none;border-color:rgba(0,212,255,.5)!important}
+button{cursor:pointer;border:none;background:none}
+::-webkit-scrollbar{width:3px}
+::-webkit-scrollbar-thumb{background:#1C2A3A;border-radius:9px}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* LAYOUT */
+#app{display:flex;flex-direction:column;min-height:100vh}
+#nav{background:#0D1320;border-bottom:1px solid #1C2A3A;position:sticky;top:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:60px;flex-shrink:0}
+.logo-box{width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#00D4FF,#0066FF);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.logo-title{font-size:16px;font-weight:800;color:#E8F0FE;letter-spacing:-.4px}
+.logo-sub{font-size:10px;color:#4A5568;font-weight:600;margin-top:-2px}
+.nb{background:transparent;border:1px solid transparent!important;border-radius:9px;padding:6px 9px;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:46px;color:#4A5568;font-size:9px;font-weight:700;transition:all .15s}
+.nb.on{background:rgba(0,212,255,.1);border-color:rgba(0,212,255,.28)!important;color:#00D4FF}
+
+/* PAGES */
+.page{padding:16px 16px 90px;max-width:700px;margin:0 auto;width:100%;animation:fadeIn .2s ease}
+.hidden{display:none!important}
+
+/* CARDS */
+.card{background:#111827;border:1px solid #1C2A3A;border-radius:16px;padding:18px}
+.card+.card{margin-top:12px}
+
+/* INPUTS */
+.inp{width:100%;background:#070B14;border:1px solid #1C2A3A;border-radius:10px;padding:13px 14px;color:#E8F0FE;font-size:15px;display:block;-webkit-appearance:none;appearance:none}
+.inp::placeholder{color:#4A5568}
+select.inp{background-image:none;cursor:pointer}
+
+/* BUTTONS */
+.btn{border-radius:11px;padding:13px 18px;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:7px;width:100%;transition:opacity .15s;border:none}
+.btn:active{opacity:.8}
+.btn-p{background:linear-gradient(135deg,#00D4FF,#0066FF);color:#fff}
+.btn-g{background:#0D1320;color:#8896AA;border:1px solid #1C2A3A!important}
+.btn-d{background:rgba(255,77,109,.1);color:#FF4D6D;border:1px solid rgba(255,77,109,.2)!important}
+.btn-sm{padding:9px 14px;font-size:13px;width:auto}
+.btn:disabled,.btn[disabled]{opacity:.4;pointer-events:none}
+
+/* CHIP */
+.chip{padding:8px 14px;border-radius:99px;border:1px solid #1C2A3A;background:#0D1320;color:#8896AA;font-size:13px;font-weight:600;display:inline-flex;align-items:center;gap:5px;transition:all .15s;cursor:pointer}
+.chip.on{border-color:#00D4FF;background:rgba(0,212,255,.1);color:#00D4FF}
+
+/* TAG */
+.tag{font-size:10px;font-weight:700;padding:3px 9px;border-radius:99px;text-transform:uppercase;letter-spacing:.3px;display:inline-flex;align-items:center;flex-shrink:0}
+
+/* PROGRESS */
+.prog-wrap{background:#0D1320;border-radius:99px;height:6px;overflow:hidden;margin-top:10px}
+.prog-fill{background:linear-gradient(135deg,#00D4FF,#0066FF);height:100%;border-radius:99px;width:0%;transition:width .4s ease}
+
+/* RESULT */
+.res-card{border-radius:18px;overflow:hidden;margin-bottom:14px;border:1px solid #1C2A3A;background:#111827}
+.res-card.best{background:linear-gradient(135deg,rgba(0,212,255,.07),rgba(0,102,255,.04));border-color:rgba(0,212,255,.28);box-shadow:0 4px 24px rgba(0,212,255,.1)}
+.res-body{padding:16px 18px}
+.res-extra{border-top:1px solid #1C2A3A;padding:14px 18px;background:#070B14;display:none}
+.res-extra.open{display:block}
+.pgrid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:14px 0}
+.pcell{background:#070B14;border-radius:10px;padding:9px 11px}
+.plabel{color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;margin-bottom:3px}
+.pval{color:#E8F0FE;font-size:13px;font-weight:700}
+.arow{display:flex;gap:8px;margin-top:14px}
+.arow>*{flex:1;border-radius:10px;padding:12px;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center;gap:6px;text-decoration:none;border:1px solid transparent;transition:opacity .15s}
+.arow>*:active{opacity:.75}
+
+/* AI */
+.ai-box{background:linear-gradient(135deg,rgba(0,212,255,.09),rgba(0,102,255,.05));border:1px solid rgba(0,212,255,.28);border-radius:18px;padding:20px;margin-bottom:18px}
+.ai-best{background:rgba(255,184,0,.1);border:1px solid rgba(255,184,0,.3);border-radius:12px;padding:12px 16px;margin-bottom:12px}
+
+/* TOGGLE */
+.tog{width:50px;height:28px;border-radius:99px;cursor:pointer;position:relative;transition:background .2s;flex-shrink:0;border:none}
+.tog-dot{width:22px;height:22px;border-radius:99px;background:#fff;position:absolute;top:3px;left:3px;transition:left .2s;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+.tog.on .tog-dot{left:25px}
+
+/* GRID */
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.g3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.lbl{color:#8896AA;font-size:11px;font-weight:700;display:block;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+
+/* TOAST */
+#toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);padding:12px 20px;border-radius:12px;font-weight:700;font-size:14px;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,.5);align-items:center;gap:8px;white-space:nowrap;display:none;animation:fadeIn .2s ease;max-width:90vw}
+
+/* MODAL OVERLAY for export */
+.overlay{position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.5)}
+.bottom-sheet{position:fixed;bottom:0;left:0;right:0;z-index:201;background:#111827;border-radius:20px 20px 0 0;padding:20px 16px 40px;border-top:1px solid #1C2A3A}
+.bs-item{width:100%;background:transparent;border:none;border-radius:10px;padding:14px 16px;color:#E8F0FE;font-size:15px;text-align:left;display:flex;align-items:center;gap:12px;font-weight:600;cursor:pointer}
+.bs-item:active{background:rgba(255,255,255,.05)}
+
+/* HISTORY CARD */
+.hcard{background:#111827;border:1px solid #1C2A3A;border-radius:14px;padding:14px 16px;margin-bottom:8px;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="app">
+  <nav id="nav">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div class="logo-box">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+      </div>
+      <div>
+        <div class="logo-title">PriceIQ</div>
+        <div class="logo-sub">Comparador com Gemini</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:2px">
+      <button class="nb on" id="nb-home" onclick="nav('home')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        Início
+      </button>
+      <button class="nb" id="nb-suppliers" onclick="nav('suppliers')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+        Lojas
+      </button>
+      <button class="nb" id="nb-history" onclick="nav('history')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="12 8 12 12 14 14"/><path d="M3.05 11a9 9 0 1 0 .5-4M3 3v5h5"/></svg>
+        Histórico
+      </button>
+      <button class="nb" id="nb-settings" onclick="nav('settings')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06-.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        Config
+      </button>
+    </div>
+  </nav>
+  <div id="page-home" class="page"></div>
+  <div id="page-suppliers" class="page hidden"></div>
+  <div id="page-history" class="page hidden"></div>
+  <div id="page-settings" class="page hidden"></div>
+  <div id="page-results" class="page hidden"></div>
+</div>
+<div id="toast"></div>
+<div id="overlay" class="overlay hidden" onclick="closeSheet()"></div>
+<div id="sheet" class="bottom-sheet hidden"></div>
+
+<script>
+'use strict';
+// ═══════════════════════════════════════════
+// STORAGE — safe wrappers
+// ═══════════════════════════════════════════
+const LS={
+  g(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}},
+  s(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}
+};
+
+// ═══════════════════════════════════════════
+// DEFAULT DATA
+// ═══════════════════════════════════════════
+const DEF_SUP=[
+  {id:"ml",  name:"Mercado Livre",site:"mercadolivre.com.br", url:"https://lista.mercadolivre.com.br/{q}",             type:"Nacional",      country:"Brasil",cur:"BRL",on:true, note:"Maior marketplace do Brasil"},
+  {id:"amz", name:"Amazon BR",   site:"amazon.com.br",        url:"https://www.amazon.com.br/s?k={q}",                  type:"Nacional",      country:"Brasil",cur:"BRL",on:true, note:"Amazon Brasil"},
+  {id:"shp", name:"Shopee",      site:"shopee.com.br",        url:"https://shopee.com.br/search?keyword={q}",           type:"Nacional",      country:"Brasil",cur:"BRL",on:true, note:"Crescimento acelerado"},
+  {id:"mag", name:"Magalu",      site:"magazineluiza.com.br", url:"https://www.magazineluiza.com.br/busca/{q}/",         type:"Nacional",      country:"Brasil",cur:"BRL",on:true, note:"Grande varejista"},
+  {id:"ali", name:"AliExpress",  site:"aliexpress.com",       url:"https://www.aliexpress.com/wholesale?SearchText={q}",type:"Internacional", country:"China", cur:"USD",on:true, note:"Varejo chinês"},
+  {id:"alib",name:"Alibaba",     site:"alibaba.com",          url:"https://www.alibaba.com/trade/search?SearchText={q}",type:"Internacional", country:"China", cur:"USD",on:false,note:"Atacado B2B"},
+  {id:"amzu",name:"Amazon USA",  site:"amazon.com",           url:"https://www.amazon.com/s?k={q}",                     type:"Internacional", country:"EUA",   cur:"USD",on:false,note:"Amazon americana"},
+];
+const DEF_SET={usd:5.10,eur:5.55,cny:0.70,freight:25,margin:30,apiKey:"",geminiApiKey:"",geminiModel:"gemini-2.5-flash-lite",rateSource:"",rateTime:"",rateTimestamp:0};
+
+// ═══════════════════════════════════════════
+// STATE — single source of truth
+// ═══════════════════════════════════════════
+const ST={
+  suppliers: LS.g("piq_sup", DEF_SUP),
+  settings:  LS.g("piq_set", DEF_SET),
+  history:   LS.g("piq_hist",[]),
+  saved:     LS.g("piq_saved",[]),
+  query: "",
+  selIds: [],
+  results: [],
+  meta: null,
+  insight: null,
+  searching: false,
+  aiLoading: false,
+  lastError: "",
+  progDone: 0,
+  progTotal: 0,
+  progCur: "",
+  expandId: null,
+  view: "home",
+  // supplier form
+  sfMode: null,   // null | "new" | "edit"
+  sfId: null,
+  sfData: null,
+  // settings form
+  setKey: "",
+  setShowKey: false,
+};
+
+function persist(){
+  LS.s("piq_sup", ST.suppliers);
+  LS.s("piq_set", ST.settings);
+  LS.s("piq_hist", ST.history);
+  LS.s("piq_saved", ST.saved);
+}
+
+// ═══════════════════════════════════════════
+// HELPERS — safe HTML escape to prevent injection
+// ═══════════════════════════════════════════
+function esc(s){
+  return String(s==null?"":s)
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;")
+    .replace(/'/g,"&#39;");
+}
+function fmt(n){return typeof n==="number"?n.toFixed(2):String(n||0)}
+
+// ═══════════════════════════════════════════
+// TOAST
+// ═══════════════════════════════════════════
+let _toastT=null;
+function toast(msg,type="ok"){
+  const el=document.getElementById("toast");
+  el.textContent=msg;
+  el.style.background=type==="ok"?"#00C48C":"#FF4D6D";
+  el.style.color="#fff";
+  el.style.display="flex";
+  clearTimeout(_toastT);
+  _toastT=setTimeout(()=>{el.style.display="none"},3200);
+}
+
+// ═══════════════════════════════════════════
+// BOTTOM SHEET (replaces dropdown menus)
+// ═══════════════════════════════════════════
+function openSheet(html){
+  document.getElementById("sheet").innerHTML=html;
+  document.getElementById("sheet").classList.remove("hidden");
+  document.getElementById("overlay").classList.remove("hidden");
+}
+function closeSheet(){
+  document.getElementById("sheet").classList.add("hidden");
+  document.getElementById("overlay").classList.add("hidden");
+}
+
+// ═══════════════════════════════════════════
+// NAV
+// ═══════════════════════════════════════════
+function nav(v){
+  ["home","suppliers","history","settings","results"].forEach(p=>{
+    document.getElementById("page-"+p).classList.toggle("hidden",p!==v);
+  });
+  ["home","suppliers","history","settings"].forEach(p=>{
+    const b=document.getElementById("nb-"+p);
+    if(b) b.className="nb"+(p===v?" on":"");
+  });
+  ST.view=v;
+  if(v==="home")     renderHome();
+  if(v==="suppliers")renderSuppliers();
+  if(v==="history")  renderHistory();
+  if(v==="settings") renderSettings();
+  if(v==="results")  renderResults();
+}
+
+// ═══════════════════════════════════════════
+// SVG ICONS (inline strings)
+// ═══════════════════════════════════════════
+const ico={
+  search:`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
+  zap:`<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>`,
+  pkg:`<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>`,
+  key:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="8" cy="15" r="5"/><path d="M15.5 8.5l5 5M20 3l1 1-7 7-1.5-.5-.5-1.5L20 3z"/></svg>`,
+  save:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>`,
+  share:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>`,
+  link:`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>`,
+  eye:`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  trash:`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>`,
+  edit:`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
+  check:`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polyline points="20 6 9 17 4 12"/></svg>`,
+  plus:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+  trophy:`<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FFB800" stroke-width="2" stroke-linecap="round"><path d="M8 21l4-4 4 4"/><line x1="12" y1="17" x2="12" y2="3"/><path d="M7 3H5a2 2 0 0 0-2 2v2a6 6 0 0 0 12 0V5a2 2 0 0 0-2-2h-2"/><path d="M17 3h2a2 2 0 0 1 2 2v2a6 6 0 0 1-12 0"/></svg>`,
+  refresh:`<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#00D4FF" stroke-width="2" stroke-linecap="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`,
+  alert:`<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#FFB800" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`,
+};
+
+// ═══════════════════════════════════════════
+// COTAÇÃO EM TEMPO REAL — Investing.com via web_search
+// Atualiza a cada hora automaticamente
+// ═══════════════════════════════════════════
+let _rateCache={ts:0,usd:null,eur:null,cny:null};
+
+async function fetchLiveRates(){
+  const now=Date.now();
+  // Cache de 1 hora (3600000 ms)
+  if(_rateCache.usd&&(now-_rateCache.ts)<3600000) return _rateCache;
+
+  const prompt=`Pesquise agora as cotações atuais de câmbio para BRL, priorizando resultados do Investing.com.
+
+Pesquise na web com Google Search: "USD BRL" site:investing.com
+Depois: "EUR BRL" site:investing.com  
+Depois: "CNY BRL" site:investing.com
+
+Retorne SOMENTE este JSON com os valores numéricos atuais (ex: 5.12 para USD):
+{"usd":0.00,"eur":0.00,"cny":0.00,"fonte":"Investing.com","horario":"HH:MM"}
+
+Não invente valores. Use apenas dados reais do Investing.com agora.`;
+
+  try{
+    const raw=await callClaude(prompt,800);
+    const p=parseJson(raw);
+    if(p&&p.usd>0&&p.eur>0&&p.cny>0){
+      _rateCache={ts:now,usd:p.usd,eur:p.eur,cny:p.cny,fonte:p.fonte||"Investing.com",horario:p.horario||new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"})};
+      // Atualiza as configurações com cotações ao vivo
+      ST.settings.usd=p.usd;
+      ST.settings.eur=p.eur;
+      ST.settings.cny=p.cny;
+      ST.settings.rateSource="Investing.com";
+      ST.settings.rateTime=_rateCache.horario;
+      persist();
+      console.log("[PriceIQ] Cotações atualizadas:",p.usd,"USD/BRL",p.eur,"EUR/BRL",p.cny,"CNY/BRL");
+      return _rateCache;
+    }
+  }catch(e){console.error("[PriceIQ] Erro ao buscar cotações:",e.message);}
+
+  // Fallback: mantém os valores salvos
+  return {usd:ST.settings.usd,eur:ST.settings.eur,cny:ST.settings.cny,fonte:"Cache",horario:"—"};
+}
+
+// ═══════════════════════════════════════════
+// GEMINI API — substitui Claude sem quebrar o restante do app
+// Mantemos o nome callClaude() para compatibilidade interna.
+// ═══════════════════════════════════════════
+function getGeminiKey(){
+  return (ST.settings.geminiApiKey||ST.settings.apiKey||localStorage.getItem("piq_gemini_key")||"").trim();
+}
+
+async function callClaude(prompt, maxTokens=2000){
+  const apiKey=getGeminiKey();
+  if(!apiKey){
+    throw new Error("Cole sua Gemini API Key nas Configurações antes de buscar.");
+  }
+
+  const model=(ST.settings.geminiModel||"gemini-2.5-flash-lite").trim();
+  const url="https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(model)+":generateContent?key="+encodeURIComponent(apiKey);
+
+  const body={
+    contents:[{role:"user",parts:[{text:prompt}]}],
+    tools:[{google_search:{}}],
+    generationConfig:{
+      temperature:0.05,
+      maxOutputTokens:maxTokens
+    }
+  };
+
+  const r=await fetch(url,{
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify(body)
+  });
+
+  if(!r.ok){
+    const txt=await r.text().catch(()=>"");
+    let e={};
+    try{e=JSON.parse(txt)}catch{}
+    const msg=e?.error?.message||txt||("Gemini HTTP "+r.status);
+    ST.lastError=msg;
+    throw new Error(msg);
+  }
+
+  const d=await r.json();
+  const parts=d?.candidates?.[0]?.content?.parts||[];
+  return parts.map(p=>p.text||"").join("\n");
+}
+
+function parseJson(raw){
+  if(!raw) return null;
+  let m=raw.match(/```json\s*([\s\S]*?)```/i);
+  if(m){try{return JSON.parse(m[1].trim())}catch{}}
+  m=raw.match(/```\s*([\s\S]*?)```/);
+  if(m){try{return JSON.parse(m[1].trim())}catch{}}
+  const s=raw.indexOf("{"),e=raw.lastIndexOf("}");
+  if(s>-1&&e>s){
+    try{return JSON.parse(raw.slice(s,e+1))}catch{}
+    try{
+      const fixed=raw.slice(s,e+1).replace(/,\s*([}\]])/g,"$1");
+      return JSON.parse(fixed);
+    }catch{}
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════
+// SEARCH ENGINE — preciso, dados 100% reais
+// ═══════════════════════════════════════════
+async function searchSupplier(product, sup){
+  const set=ST.settings;
+  const isIntl=["aliexpress.com","alibaba.com","amazon.com"].includes(sup.site);
+  const searchTerms=isIntl?`${product} buy price`:`${product} comprar preço`;
+
+  const prompt=`Você é um robô de comparação de preços. Pesquise AGORA na web o site ${sup.site} e encontre o preço real do produto abaixo.
+
+PRODUTO: "${product}"
+SITE ALVO: ${sup.site} (${sup.name})
+MOEDA: ${sup.cur}
+
+INSTRUÇÕES OBRIGATÓRIAS:
+1. Pesquise na web com Google Search usando a query: ${product} site:${sup.site}
+2. Analise os resultados retornados pela busca
+3. Encontre o produto mais relevante e similar a "${product}"
+4. Extraia o preço EXATO que aparece na página — não estime, não arredonde, copie o valor real
+5. Para o frete: copie o valor EXATO da página. Se a página disser "frete grátis" ou "entrega grátis" → freightIncluded:true e freight:0. Se mostrar um valor → use esse valor. Se não mostrar nada → freight:${set.freight} e freightNote:"estimado"
+6. Copie a URL real do produto (não a URL de busca)
+
+RETORNE APENAS este JSON, sem nenhum texto antes ou depois:
+{"found":true,"productName":"nome exato","price":0.00,"freight":0.00,"freightIncluded":false,"freightNote":"real|estimado|grátis","currency":"${sup.cur}","link":"https://url-real","available":true,"rating":"0.0","reviews":0,"sellers":1,"priceMin":0.00,"priceMax":0.00,"note":""}
+
+CAMPOS OBRIGATÓRIOS:
+- price: valor numérico puro (ex: 1299.90) — EXTRAÍDO DA PÁGINA, não inventado
+- freight: valor numérico do frete em ${sup.cur}, ou 0 se grátis
+- freightIncluded: true SÓ se confirmado "frete grátis" na página
+- freightNote: "real" se o valor veio da página, "estimado" se você não encontrou, "grátis" se confirmado
+- link: URL completa e real do produto (não da busca)
+- sellers: se o marketplace tiver múltiplos vendedores do mesmo produto, indique quantos. Se sim, price = média e priceMin/priceMax = menor/maior encontrado
+- available: false se aparecer "esgotado" ou "indisponível"
+
+SE NÃO ENCONTRAR O PRODUTO: {"found":false}
+NÃO INVENTE PREÇOS. Se não achar dados reais, retorne {"found":false}.`;
+
+  try{
+    const raw=await callClaude(prompt,2500);
+    const p=parseJson(raw);
+
+    if(!p||p.found===false||!p.productName) return {found:false};
+    const price=parseFloat(p.price);
+    if(!price||price<=0||price>9999999) return {found:false};
+
+    const freight=parseFloat(p.freight)||0;
+    const priceMin=parseFloat(p.priceMin)||price;
+    const priceMax=parseFloat(p.priceMax)||price;
+    const total=price+freight;
+    const cur=String(p.currency||sup.cur).toUpperCase();
+
+    // Converte para BRL usando cotação atual
+    const rate=cur==="USD"?set.usd:cur==="EUR"?set.eur:cur==="CNY"?set.cny:1;
+    const brl=parseFloat((total*rate).toFixed(2));
+    const minBrl=parseFloat((priceMin*rate).toFixed(2));
+    const maxBrl=parseFloat((priceMax*rate).toFixed(2));
+
+    return{
+      found:true,
+      id:"r"+Date.now()+Math.random().toString(36).slice(2,6),
+      productName:String(p.productName).slice(0,120),
+      supplier:sup.name,
+      supId:sup.id,
+      price,freight,total,brl,currency:cur,
+      freeShip:!!p.freightIncluded,
+      freightNote:String(p.freightNote||"real"),
+      link:String(p.link||sup.url.replace("{q}",encodeURIComponent(product))),
+      available:p.available!==false,
+      rating:String(p.rating||""),
+      reviews:parseInt(p.reviews)||0,
+      sellers:parseInt(p.sellers)||1,
+      priceMin,priceMax,priceMinBrl:minBrl,priceMaxBrl:maxBrl,
+      note:String(p.note||""),
+      rateUsed:rate,
+      rateSource:set.rateSource||"manual",
+      ts:new Date().toISOString()
+    };
+  }catch(err){
+    console.error("[PriceIQ]",sup.name,err.message);
+    ST.lastError=String(err.message||err||"Erro desconhecido na API Gemini");
+    toast("Erro Gemini: "+ST.lastError.slice(0,120),"err");
+    return{found:false,error:ST.lastError};
+  }
+}
+
+async function aiAnalyze(product,results){
+  const set=ST.settings;
+  const list=results.map((r,i)=>`${i+1}. ${r.supplier}: R$ ${fmt(r.brl)} total | ${r.currency} ${fmt(r.price)}${r.sellers>1?` (média ${r.sellers} vendedores: R$${fmt(r.priceMinBrl)}–R$${fmt(r.priceMaxBrl)})`:""} | frete: ${r.freeShip?"grátis":r.freightNote==="estimado"?"~R$"+fmt(r.freight*r.rateUsed)+" (estimado)":r.currency+" "+fmt(r.freight)} | ${r.available?"✅":"❌"}${r.rating?` ⭐${r.rating}`:""}`).join("\n");
+
+  const prompt=`Especialista em compras no Brasil. Analise os resultados REAIS coletados agora.
+
+Produto: "${product}"
+Margem desejada: ${set.margin}% | Câmbio USD/BRL: ${set.usd} (fonte: ${set.rateSource||"manual"})
+
+Resultados:
+${list}
+
+Retorne SOMENTE este JSON:
+{"bestChoice":"fornecedor","reason":"motivo 1-2 frases","summary":"análise 2-3 frases","alerts":["aviso se frete estimado ou dado incompleto"],"resellerTip":"R$ XX.XX","savings":"economia possível"}`;
+
+  try{
+    const raw=await callClaude(prompt,1000);
+    const p=parseJson(raw);
+    if(!p||!p.bestChoice) throw new Error();
+    return p;
+  }catch{
+    const b=results[0],w=results[results.length-1];
+    return{
+      bestChoice:b?.supplier||"—",
+      reason:"Menor custo total com frete.",
+      summary:`${results.length} fornecedores pesquisados. Melhor: R$ ${fmt(b?.brl)} no ${b?.supplier}.`,
+      alerts:results.some(r=>r.freightNote==="estimado")?["Frete estimado em alguns resultados — confirme no site antes de comprar."]:[] ,
+      resellerTip:`R$ ${fmt((b?.brl||0)*(1+set.margin/100))}`,
+      savings:w&&b&&w.brl>b.brl?`Economia de até R$ ${fmt(w.brl-b.brl)}`:""
+    };
+  }
+}
+
+// ═══════════════════════════════════════════
+// SEARCH FLOW
+// ═══════════════════════════════════════════
+async function doSearch(){
+  // Read query from input safely
+  const inp=document.getElementById("q-inp");
+  const q=inp?inp.value.trim():ST.query.trim();
+  if(!q){toast("Digite um produto","err");return}
+  if(!getGeminiKey()){toast("Cole sua Gemini API Key nas Configurações","err");nav("settings");return}
+  const active=ST.suppliers.filter(s=>s.on);
+  const targets=ST.selIds.length?ST.suppliers.filter(s=>ST.selIds.includes(s.id)&&s.on):active;
+  if(!targets.length){toast("Nenhum fornecedor ativo","err");return}
+
+  ST.query=q;
+  ST.searching=true;
+  ST.results=[];
+  ST.lastError="";
+  ST.insight=null;
+  ST.meta=null;
+  ST.expandId=null;
+  ST.progDone=0;
+  ST.progTotal=targets.length;
+  ST.progCur=targets[0]?.name||"";
+  nav("results");
+
+  for(let i=0;i<targets.length;i++){
+    const sup=targets[i];
+    ST.progDone=i;
+    ST.progCur=sup.name;
+    updateProg();
+    try{
+      const r=await searchSupplier(q,sup);
+      if(r.found){
+        ST.results.push(r);
+        ST.results.sort((a,b)=>a.brl-b.brl);
+        renderResultCards();
+      }
+    }catch(e){console.error(e)}
+    ST.progDone=i+1;
+    updateProg();
+  }
+
+  ST.searching=false;
+  const m={
+    id:"s"+Date.now(),
+    query:q,
+    ts:new Date().toISOString(),
+    count:ST.results.length,
+    bestBRL:ST.results[0]?.brl||0,
+    bestSup:ST.results[0]?.supplier||""
+  };
+  ST.meta=m;
+  ST.history=[m,...ST.history.slice(0,49)];
+  persist();
+  renderResults(); // full re-render to remove progress bar
+
+  if(ST.results.length){
+    ST.aiLoading=true;
+    renderAiBox();
+    try{ST.insight=await aiAnalyze(q,ST.results)}catch{ST.insight=null}
+    ST.aiLoading=false;
+    renderAiBox();
+  }
+}
+
+function updateProg(){
+  const fill=document.getElementById("prog-fill");
+  const txt=document.getElementById("prog-txt");
+  const cnt=document.getElementById("prog-cnt");
+  const pct=ST.progTotal?Math.round(ST.progDone/ST.progTotal*100):0;
+  if(fill) fill.style.width=pct+"%";
+  if(txt)  txt.textContent=ST.progCur?"Buscando "+ST.progCur+"…":"Processando…";
+  if(cnt)  cnt.textContent=ST.progDone+"/"+ST.progTotal;
+}
+
+// ═══════════════════════════════════════════
+// HOME
+// ═══════════════════════════════════════════
+function renderHome(){
+  const active=ST.suppliers.filter(s=>s.on);
+  const selCount=ST.selIds.length||active.length;
+  const hasGeminiKey=!!getGeminiKey();
+
+  const chips=active.map(s=>{
+    const on=ST.selIds.includes(s.id);
+    return`<button class="chip${on?" on":""}" data-sid="${esc(s.id)}" onclick="toggleChip(this)">${on?ico.check+" ":""}<span>${esc(s.name)}</span></button>`;
+  }).join("");
+
+  const recent=ST.history.slice(0,6).map((h,i)=>`
+    <div class="hcard" data-idx="${i}" onclick="recallQuery(${i})">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <div style="flex:1;min-width:0">
+          <p style="color:#E8F0FE;font-size:14px;font-weight:600;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(h.query)}</p>
+          <p style="color:#4A5568;font-size:12px">${new Date(h.ts).toLocaleDateString("pt-BR")} · ${h.count} resultado${h.count!==1?"s":""}${h.bestBRL>0?" · melhor R$ "+fmt(h.bestBRL):""}</p>
+        </div>
+        ${ico.refresh}
+      </div>
+    </div>`).join("");
+
+  document.getElementById("page-home").innerHTML=`
+    <div style="text-align:center;margin-bottom:24px">
+      <div style="display:inline-flex;align-items:center;gap:6px;background:rgba(0,212,255,.1);border:1px solid rgba(0,212,255,.28);border-radius:99px;padding:5px 14px;margin-bottom:14px">
+        ${ico.zap}<span style="color:#00D4FF;font-size:12px;font-weight:700">Busca automática com Gemini</span>
+      </div>
+      <h1 style="color:#E8F0FE;font-size:25px;font-weight:800;margin-bottom:8px;letter-spacing:-.4px">Compare preços<br>em tempo real</h1>
+      <p style="color:#8896AA;font-size:14px">O Gemini pesquisa preços e links com validação</p>
+    </div>
+
+    ${``}
+
+    ${!hasGeminiKey?`
+    <div class="card" style="border-color:rgba(255,184,0,.35);margin-bottom:12px;background:rgba(255,184,0,.05)">
+      <p style="color:#FFB800;font-size:13px;font-weight:800;margin-bottom:5px">⚠️ Gemini API Key necessária</p>
+      <p style="color:#8896AA;font-size:12px;line-height:1.5;margin-bottom:12px">Cole a chave em Configurações para ativar a busca automática. Sem a chave, o app não consegue pesquisar preços.</p>
+      <button class="btn btn-g btn-sm" onclick="nav('settings')">Abrir Configurações</button>
+    </div>`:""}
+
+    <div class="card" style="margin-bottom:18px">
+      <div style="position:relative;margin-bottom:16px">
+        <div style="position:absolute;left:14px;top:50%;transform:translateY(-50%);pointer-events:none">${ico.pkg}</div>
+        <input id="q-inp" class="inp" style="padding-left:46px;border-radius:12px;font-size:15px" placeholder="Ex: iPhone 15, Nike Air Max, Notebook..."
+          value="${esc(ST.query)}"
+          oninput="ST.query=this.value"
+          onkeydown="if(event.key==='Enter'){event.preventDefault();doSearch()}"/>
+      </div>
+
+      <div style="margin-bottom:18px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <span style="color:#4A5568;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px">Pesquisar em (${selCount})</span>
+          ${ST.selIds.length?`<button style="background:none;border:none;color:#4A5568;font-size:12px;font-weight:600;cursor:pointer" onclick="clearSel()">Limpar seleção</button>`:""}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">${chips}</div>
+      </div>
+
+      <button class="btn btn-p" onclick="doSearch()">
+        ${ico.search} Buscar Preços Reais
+      </button>
+    </div>
+
+    ${ST.history.length?`
+    <div>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4A5568" stroke-width="2" stroke-linecap="round"><polyline points="12 8 12 12 14 14"/><path d="M3.05 11a9 9 0 1 0 .5-4M3 3v5h5"/></svg>
+        <span style="color:#4A5568;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px">Buscas recentes</span>
+      </div>
+      ${recent}
+    </div>`:""}
+  `;
+}
+
+// Use index instead of passing query string to avoid HTML injection
+function recallQuery(idx){
+  const h=ST.history[idx];
+  if(!h) return;
+  ST.query=h.query;
+  renderHome();
+}
+
+function toggleChip(btn){
+  const sid=btn.getAttribute("data-sid");
+  if(!sid) return;
+  const idx=ST.selIds.indexOf(sid);
+  if(idx>=0) ST.selIds.splice(idx,1);
+  else ST.selIds.push(sid);
+  renderHome();
+}
+
+function clearSel(){ST.selIds=[];renderHome()}
+
+// ═══════════════════════════════════════════
+// RESULTS
+// ═══════════════════════════════════════════
+function renderResults(){
+  const q=esc(ST.meta?.query||ST.query);
+  const sub=ST.searching
+    ?`Buscando ${esc(ST.progCur)}… (${ST.progDone}/${ST.progTotal})`
+    :`${ST.results.length} resultado${ST.results.length!==1?"s":""}`;
+
+  const progHTML=ST.searching?`
+    <div class="card" style="margin-bottom:18px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="width:8px;height:8px;border-radius:50%;background:#00D4FF;animation:pulse 1s infinite;flex-shrink:0"></div>
+          <span id="prog-txt" style="color:#E8F0FE;font-size:14px;font-weight:500">Buscando…</span>
+        </div>
+        <span id="prog-cnt" style="color:#00D4FF;font-weight:800">${ST.progDone}/${ST.progTotal}</span>
+      </div>
+      <div class="prog-wrap"><div id="prog-fill" class="prog-fill" style="width:${ST.progTotal?Math.round(ST.progDone/ST.progTotal*100):0}%"></div></div>
+    </div>`:"";
+
+  const empty=!ST.searching&&!ST.results.length?`
+    <div style="text-align:center;padding:50px 20px;background:#111827;border-radius:18px;border:1px solid #1C2A3A">
+      ${ico.search}
+      <p style="color:#8896AA;font-size:16px;font-weight:700;margin:16px 0 6px">Nenhum resultado</p>
+      <p style="color:#4A5568;font-size:14px;margin-bottom:14px">Tente outros fornecedores ou verifique o produto.</p>
+      ${ST.lastError?`<div style="text-align:left;background:#070B14;border:1px solid rgba(255,77,109,.25);border-radius:12px;padding:12px;margin:0 auto 16px;max-width:560px"><p style="color:#FF4D6D;font-size:12px;font-weight:800;margin-bottom:4px">Erro técnico encontrado</p><p style="color:#8896AA;font-size:12px;line-height:1.45;word-break:break-word">${esc(ST.lastError)}</p></div>`:""}
+      <button class="btn btn-g btn-sm" onclick="nav('home')" style="margin:0 auto">Nova busca</button>
+    </div>`:"";
+
+  document.getElementById("page-results").innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;gap:10px">
+      <div style="flex:1;min-width:0">
+        <h2 style="color:#E8F0FE;font-size:19px;font-weight:800;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${q}</h2>
+        <p style="color:#4A5568;font-size:13px">${sub}</p>
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0">
+        ${!ST.searching&&ST.results.length?`
+          <button class="btn btn-g btn-sm" onclick="saveSearch()">${ico.save}</button>
+          <button class="btn btn-p btn-sm" onclick="openExportSheet()">${ico.share} Exportar</button>
+        `:""}
+      </div>
+    </div>
+    ${progHTML}
+    <div id="ai-area"></div>
+    ${empty}
+    <div id="cards-area">${buildCards()}</div>
+  `;
+  renderAiBox();
+}
+
+function renderResultCards(){
+  const ca=document.getElementById("cards-area");
+  if(ca) ca.innerHTML=buildCards();
+}
+
+function buildCards(){
+  const best=ST.results[0];
+  return ST.results.map((r,i)=>{
+    const isBest=i===0;
+    const diff=best&&i>0?((r.brl-best.brl)/best.brl*100).toFixed(1):null;
+    const isExp=ST.expandId===r.id;
+    const resell=fmt((r.brl||0)*(1+ST.settings.margin/100));
+    const tags=[
+      isBest?`<span class="tag" style="background:rgba(255,184,0,.12);color:#FFB800;border:1px solid rgba(255,184,0,.3)">${ico.trophy} Melhor</span>`:"",
+      !r.available?`<span class="tag" style="background:rgba(255,77,109,.1);color:#FF4D6D;border:1px solid rgba(255,77,109,.3)">Indisponível</span>`:"",
+      r.freeShip?`<span class="tag" style="background:rgba(0,229,160,.1);color:#00E5A0;border:1px solid rgba(0,229,160,.3)">Frete Grátis</span>`:"",
+      diff&&r.available?`<span class="tag" style="background:rgba(74,85,104,.15);color:#8896AA;border:1px solid rgba(74,85,104,.3)">+${diff}% mais caro</span>`:"",
+    ].filter(Boolean).join("");
+
+    const expandedHTML=isExp?`
+      <div class="res-extra open">
+        <div class="g2" style="gap:10px;margin-bottom:12px">
+          <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:2px">Fornecedor</p><p style="color:#E8F0FE;font-size:13px">${esc(r.supplier)}</p></div>
+          <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:2px">Moeda</p><p style="color:#E8F0FE;font-size:13px">${esc(r.currency)}</p></div>
+          <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:2px">Disponível</p><p style="color:#E8F0FE;font-size:13px">${r.available?"✅ Sim":"❌ Não"}</p></div>
+          <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:2px">Frete grátis</p><p style="color:#E8F0FE;font-size:13px">${r.freeShip?"✅ Sim":"❌ Não"}</p></div>
+          ${r.rating?`<div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:2px">Avaliação</p><p style="color:#E8F0FE;font-size:13px">⭐ ${esc(r.rating)} (${r.reviews} avaliações)</p></div>`:""}
+          ${r.sellers>1?`<div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:2px">Vendedores encontrados</p><p style="color:#E8F0FE;font-size:13px">${r.sellers} ofertas — mín R$ ${fmt(r.priceMinBrl)} / máx R$ ${fmt(r.priceMaxBrl)}</p></div>`:""}
+          <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:2px">Data</p><p style="color:#E8F0FE;font-size:13px">${new Date(r.ts).toLocaleString("pt-BR")}</p></div>
+        </div>
+        ${r.note?`<p style="color:#8896AA;font-size:12px;background:#0D1320;padding:10px 12px;border-radius:8px;line-height:1.55">${esc(r.note)}</p>`:""}
+      </div>`:"";
+
+    return`<div class="res-card${isBest?" best":""}">
+      <div class="res-body">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:7px">${tags}</div>
+            <p style="color:#E8F0FE;font-size:15px;font-weight:700;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.productName)}</p>
+            <p style="color:#00D4FF;font-size:13px;font-weight:600">${esc(r.supplier)}</p>
+          </div>
+          <div style="text-align:right;flex-shrink:0">
+            <p style="color:${isBest?"#00D4FF":"#E8F0FE"};font-size:22px;font-weight:800;margin:0">R$ ${fmt(r.brl)}</p>
+            ${r.currency!=="BRL"?`<p style="color:#4A5568;font-size:11px">${esc(r.currency)} ${fmt(r.total)}</p>`:""}
+          </div>
+        </div>
+        <div class="pgrid">
+          <div class="pcell"><p class="plabel">Preço</p><p class="pval">${esc(r.currency)} ${fmt(r.price)}${r.sellers>1?`<br><span style="color:#4A5568;font-size:10px">${r.sellers} vendedores</span>`:""}</p></div>
+          <div class="pcell"><p class="plabel">Frete</p><p class="pval" style="${r.freeShip?"color:#00E5A0":""}">${r.freeShip?"Grátis ✅":`${esc(r.currency)} ${fmt(r.freight)}`}</p></div>
+          <div class="pcell"><p class="plabel">Revenda ${ST.settings.margin}%</p><p class="pval" style="color:#00E5A0">R$ ${resell}</p></div>
+        </div>
+        ${r.sellers>1?`<div style="background:#070B14;border-radius:10px;padding:8px 12px;margin-bottom:0;font-size:12px;color:#8896AA">📊 Faixa de preço: R$ ${fmt(r.priceMinBrl)} – R$ ${fmt(r.priceMaxBrl)} (média de ${r.sellers} ofertas)</div>`:""}
+
+        <div class="arow">
+          <a href="${esc(r.link)}" target="_blank" rel="noopener noreferrer" style="background:${isBest?"linear-gradient(135deg,#00D4FF,#0066FF)":"#0D1320"};color:${isBest?"#fff":"#8896AA"};border-color:${isBest?"transparent":"#1C2A3A"}">${ico.link} Ver Produto</a>
+          <button data-rid="${esc(r.id)}" onclick="toggleExpand(this)" style="background:#0D1320;color:#8896AA;border-color:#1C2A3A;flex:0 0 auto;padding:12px 14px">${ico.eye}</button>
+          <button data-rid="${esc(r.id)}" onclick="delResult(this)" style="background:rgba(255,77,109,.1);color:#FF4D6D;border-color:rgba(255,77,109,.2);flex:0 0 auto;padding:12px 14px">${ico.trash}</button>
+        </div>
+      </div>
+      ${expandedHTML}
+    </div>`;
+  }).join("");
+}
+
+function renderAiBox(){
+  const area=document.getElementById("ai-area");
+  if(!area) return;
+  if(!ST.aiLoading&&!ST.insight){area.innerHTML="";return}
+  const ins=ST.insight;
+  area.innerHTML=`
+    <div class="ai-box">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+        <div style="width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,#00D4FF,#0066FF);display:flex;align-items:center;justify-content:center;flex-shrink:0">${ico.zap}</div>
+        <div>
+          <p style="color:#00D4FF;font-weight:700;font-size:14px;margin:0">Análise de IA</p>
+          ${ST.aiLoading?`<p style="color:#4A5568;font-size:12px;margin:0">Analisando resultados…</p>`:""}
+        </div>
+      </div>
+      ${ins?`
+        <div class="ai-best">
+          <p style="color:#FFB800;font-weight:700;font-size:14px;margin-bottom:4px">${ico.trophy} Recomendado: ${esc(ins.bestChoice)}</p>
+          <p style="color:#8896AA;font-size:13px">${esc(ins.reason)}</p>
+        </div>
+        <p style="color:#8896AA;font-size:13px;margin-bottom:8px;line-height:1.65">${esc(ins.summary)}</p>
+        ${ins.savings?`<p style="color:#00E5A0;font-size:13px;font-weight:600;margin-bottom:6px">💰 ${esc(ins.savings)}</p>`:""}
+        ${ins.resellerTip?`<p style="color:#00D4FF;font-size:13px;font-weight:600;margin-bottom:8px">🏷️ ${esc(ins.resellerTip)}</p>`:""}
+        ${(ins.alerts||[]).filter(Boolean).map(a=>`<p style="color:#FFB800;font-size:13px;margin-bottom:4px">${ico.alert} ${esc(a)}</p>`).join("")}
+      `:""}
+    </div>`;
+}
+
+function toggleExpand(btn){
+  const rid=btn.getAttribute("data-rid");
+  ST.expandId=ST.expandId===rid?null:rid;
+  renderResultCards();
+}
+function delResult(btn){
+  const rid=btn.getAttribute("data-rid");
+  ST.results=ST.results.filter(r=>r.id!==rid);
+  renderResultCards();
+}
+function saveSearch(){
+  if(!ST.meta||!ST.results.length){toast("Nada para salvar","err");return}
+  const rec={...ST.meta,results:ST.results,insight:ST.insight};
+  ST.saved=[rec,...ST.saved.filter(x=>x.id!==rec.id)];
+  persist();
+  toast("Pesquisa salva!");
+}
+
+// Export via bottom sheet (works on mobile)
+function openExportSheet(){
+  openSheet(`
+    <p style="color:#8896AA;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:16px">Exportar resultados</p>
+    <button class="bs-item" onclick="doExport('csv');closeSheet()">
+      <span style="font-size:20px">📊</span> Exportar CSV (abre no Excel)
+    </button>
+    <button class="bs-item" onclick="doExport('share');closeSheet()">
+      <span style="font-size:20px">📱</span> Compartilhar / WhatsApp
+    </button>
+    <button class="bs-item" onclick="closeSheet()" style="color:#8896AA;margin-top:8px">Cancelar</button>
+  `);
+}
+
+async function doExport(type){
+  if(type==="csv"){
+    const h=["Produto","Fornecedor","Preço","Moeda","Frete","Total BRL","Frete Grátis","Disponível","Link","Data"];
+    const rows=ST.results.map(r=>[r.productName,r.supplier,r.price,r.currency,r.freight,fmt(r.brl),r.freeShip?"Sim":"Não",r.available?"Sim":"Não",r.link,new Date(r.ts).toLocaleString("pt-BR")]);
+    const csv=[h,...rows].map(row=>row.map(v=>`"${String(v==null?"":v).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+    const a=document.createElement("a");
+    a.href=URL.createObjectURL(new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"}));
+    a.download=(ST.meta?.query||"precos").replace(/\s+/g,"_")+".csv";
+    a.click();
+    toast("CSV baixado!");
+  } else {
+    const q=ST.meta?.query||ST.query;
+    const lines=[`🔍 *PriceIQ — ${q}*\n`];
+    ST.results.forEach((r,i)=>{
+      const m=["🥇","🥈","🥉"][i]||`${i+1}.`;
+      lines.push(`${m} *${r.supplier}*\n   💰 R$ ${fmt(r.brl)}\n   🚚 ${r.freeShip?"Frete grátis ✅":`${r.currency} ${fmt(r.freight)}`}\n   ${r.available?"✅ Disponível":"❌ Indisponível"}\n   🔗 ${r.link}\n`);
+    });
+    lines.push(`_Pesquisado ${new Date().toLocaleString("pt-BR")} via PriceIQ_`);
+    const text=lines.join("\n");
+    if(navigator.share){try{await navigator.share({title:`Preços: ${q}`,text});return}catch{}}
+    try{await navigator.clipboard.writeText(text);toast("Copiado para área de transferência!")}
+    catch{toast("Não foi possível copiar","err")}
+  }
+}
+
+// ═══════════════════════════════════════════
+// SUPPLIERS
+// ═══════════════════════════════════════════
+function renderSuppliers(){
+  const active=ST.suppliers.filter(s=>s.on).length;
+
+  const formHTML=ST.sfMode?buildSupForm():"";
+
+  const list=ST.suppliers.map(s=>`
+    <div style="background:#111827;border:1px solid #1C2A3A;border-radius:14px;padding:14px 16px;margin-bottom:10px;opacity:${s.on?1:.6}">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:4px">
+            <span style="color:#E8F0FE;font-weight:700;font-size:15px">${esc(s.name)}</span>
+            <span class="tag" style="background:${s.on?"rgba(0,229,160,.1)":"rgba(74,85,104,.15)"};color:${s.on?"#00E5A0":"#8896AA"};border:1px solid ${s.on?"rgba(0,229,160,.3)":"rgba(74,85,104,.3)"}">${s.on?"Ativo":"Inativo"}</span>
+            <span class="tag" style="background:rgba(74,85,104,.15);color:#8896AA;border:1px solid rgba(74,85,104,.3)">${esc(s.cur)}</span>
+          </div>
+          <p style="color:#4A5568;font-size:12px">${esc(s.site)} · ${esc(s.country)}</p>
+          ${s.note?`<p style="color:#4A5568;font-size:12px;margin-top:2px">${esc(s.note)}</p>`:""}
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0">
+          <button data-sid="${esc(s.id)}" onclick="toggleSupOn(this)" style="background:${s.on?"rgba(0,229,160,.1)":"#0D1320"};border:1px solid ${s.on?"rgba(0,229,160,.4)":"#1C2A3A"};border-radius:8px;padding:9px;display:flex;align-items:center;color:${s.on?"#00E5A0":"#4A5568"}">${ico.check}</button>
+          <button data-sid="${esc(s.id)}" onclick="openEditSup(this)" style="background:#0D1320;border:1px solid #1C2A3A;border-radius:8px;padding:9px;display:flex;align-items:center;color:#8896AA">${ico.edit}</button>
+          <button data-sid="${esc(s.id)}" onclick="delSup(this)" style="background:rgba(255,77,109,.1);border:1px solid rgba(255,77,109,.2);border-radius:8px;padding:9px;display:flex;align-items:center;color:#FF4D6D">${ico.trash}</button>
+        </div>
+      </div>
+    </div>`).join("");
+
+  document.getElementById("page-suppliers").innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <div>
+        <h2 style="color:#E8F0FE;font-size:20px;font-weight:800;margin-bottom:3px">Fornecedores</h2>
+        <p style="color:#4A5568;font-size:13px">${ST.suppliers.length} cadastrados · ${active} ativos</p>
+      </div>
+      <button class="btn btn-p btn-sm" onclick="openNewSup()">${ico.plus} Adicionar</button>
+    </div>
+    <div id="sup-form-area">${formHTML}</div>
+    <div id="sup-list">${list}</div>
+  `;
+}
+
+function buildSupForm(){
+  const d=ST.sfData||{};
+  return`
+    <div class="card" style="border-color:rgba(0,212,255,.28);margin-bottom:18px">
+      <h3 style="color:#E8F0FE;font-size:16px;font-weight:700;margin-bottom:18px">${ST.sfMode==="edit"?"Editar":"Novo"} Fornecedor</h3>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="g2">
+          <div><label class="lbl">Nome *</label><input id="sf-name" class="inp" placeholder="Ex: Amazon" value="${esc(d.name||"")}"/></div>
+          <div><label class="lbl">Site *</label><input id="sf-site" class="inp" placeholder="amazon.com.br" value="${esc(d.site||"")}"/></div>
+        </div>
+        <div>
+          <label class="lbl">URL de busca * — use {q} onde entra o produto</label>
+          <input id="sf-url" class="inp" placeholder="https://amazon.com.br/s?k={q}" value="${esc(d.url||"")}"/>
+          <p style="color:#4A5568;font-size:11px;margin-top:5px">Exemplo: https://lista.mercadolivre.com.br/{q}</p>
+        </div>
+        <div><label class="lbl">Observações</label><input id="sf-note" class="inp" placeholder="Notas..." value="${esc(d.note||"")}"/></div>
+        <div class="g3">
+          <div><label class="lbl">Tipo</label><select id="sf-type" class="inp">${["Nacional","Internacional","Atacado","Fabricante"].map(o=>`<option${(d.type||"Nacional")===o?" selected":""}>${esc(o)}</option>`).join("")}</select></div>
+          <div><label class="lbl">País</label><select id="sf-country" class="inp">${["Brasil","China","EUA","Alemanha","Outro"].map(o=>`<option${(d.country||"Brasil")===o?" selected":""}>${esc(o)}</option>`).join("")}</select></div>
+          <div><label class="lbl">Moeda</label><select id="sf-cur" class="inp">${["BRL","USD","EUR","CNY"].map(o=>`<option${(d.cur||"BRL")===o?" selected":""}>${esc(o)}</option>`).join("")}</select></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button id="sf-tog" class="tog${d.on!==false?" on":""}" style="background:${d.on!==false?"#00D4FF":"#1C2A3A"}" onclick="toggleSfOn()">
+            <div class="tog-dot"></div>
+          </button>
+          <span id="sf-on-lbl" style="color:#8896AA;font-size:14px">Fornecedor ${d.on!==false?"ativo":"inativo"}</span>
+        </div>
+        <div style="display:flex;gap:10px">
+          <button class="btn btn-p" onclick="saveSupForm()" style="flex:1">${ico.save} Salvar</button>
+          <button class="btn btn-g" onclick="cancelSupForm()" style="flex:1">Cancelar</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function openNewSup(){
+  ST.sfMode="new";
+  ST.sfId=null;
+  ST.sfData={name:"",site:"",url:"",type:"Nacional",country:"Brasil",cur:"BRL",note:"",on:true};
+  const area=document.getElementById("sup-form-area");
+  if(area) area.innerHTML=buildSupForm();
+}
+function openEditSup(btn){
+  const sid=btn.getAttribute("data-sid");
+  const s=ST.suppliers.find(x=>x.id===sid);
+  if(!s) return;
+  ST.sfMode="edit";
+  ST.sfId=sid;
+  ST.sfData={...s};
+  const area=document.getElementById("sup-form-area");
+  if(area) area.innerHTML=buildSupForm();
+}
+function toggleSfOn(){
+  const tog=document.getElementById("sf-tog");
+  const lbl=document.getElementById("sf-on-lbl");
+  if(!tog) return;
+  const isOn=tog.classList.contains("on");
+  tog.classList.toggle("on",!isOn);
+  tog.style.background=!isOn?"#00D4FF":"#1C2A3A";
+  if(lbl) lbl.textContent="Fornecedor "+(!isOn?"ativo":"inativo");
+  if(ST.sfData) ST.sfData.on=!isOn;
+}
+function saveSupForm(){
+  const name=(document.getElementById("sf-name")||{}).value||"";
+  const site=(document.getElementById("sf-site")||{}).value||"";
+  const url=(document.getElementById("sf-url")||{}).value||"";
+  const note=(document.getElementById("sf-note")||{}).value||"";
+  const type=(document.getElementById("sf-type")||{}).value||"Nacional";
+  const country=(document.getElementById("sf-country")||{}).value||"Brasil";
+  const cur=(document.getElementById("sf-cur")||{}).value||"BRL";
+  const on=document.getElementById("sf-tog")?.classList.contains("on")!==false;
+  if(!name.trim()||!site.trim()){toast("Nome e site são obrigatórios","err");return}
+  if(!url.includes("{q}")){toast("A URL deve conter {q}","err");return}
+  const data={name:name.trim(),site:site.trim(),url:url.trim(),note:note.trim(),type,country,cur,on};
+  if(ST.sfMode==="edit") ST.suppliers=ST.suppliers.map(s=>s.id===ST.sfId?{...s,...data}:s);
+  else ST.suppliers=[...ST.suppliers,{...data,id:"sup"+Date.now()}];
+  ST.sfMode=null;ST.sfId=null;ST.sfData=null;
+  persist();
+  toast("Salvo!");
+  renderSuppliers();
+}
+function cancelSupForm(){
+  ST.sfMode=null;ST.sfId=null;ST.sfData=null;
+  const area=document.getElementById("sup-form-area");
+  if(area) area.innerHTML="";
+}
+function toggleSupOn(btn){
+  const sid=btn.getAttribute("data-sid");
+  ST.suppliers=ST.suppliers.map(s=>s.id===sid?{...s,on:!s.on}:s);
+  persist();renderSuppliers();
+}
+function delSup(btn){
+  const sid=btn.getAttribute("data-sid");
+  ST.suppliers=ST.suppliers.filter(s=>s.id!==sid);
+  persist();toast("Removido.");renderSuppliers();
+}
+
+// ═══════════════════════════════════════════
+// HISTORY
+// ═══════════════════════════════════════════
+function renderHistory(){
+  const items=ST.saved.map((rec,i)=>{
+    const b=rec.results?.[0];
+    return`
+      <div class="card" style="margin-bottom:12px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;gap:10px">
+          <div style="flex:1;min-width:0">
+            <p style="color:#E8F0FE;font-weight:700;font-size:16px;margin-bottom:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(rec.query)}</p>
+            <p style="color:#4A5568;font-size:12px">${new Date(rec.ts).toLocaleString("pt-BR")} · ${rec.count} resultado${rec.count!==1?"s":""}</p>
+          </div>
+          ${b?`<div style="text-align:right;flex-shrink:0">
+            <p style="color:#4A5568;font-size:10px;margin-bottom:2px">Melhor preço</p>
+            <p style="color:#00D4FF;font-weight:800;font-size:17px">R$ ${fmt(b.brl)}</p>
+            <p style="color:#4A5568;font-size:10px">${esc(b.supplier)}</p>
+          </div>`:""}
+        </div>
+        ${rec.insight?.bestChoice?`<div style="background:rgba(255,184,0,.1);border:1px solid rgba(255,184,0,.3);border-radius:10px;padding:8px 12px;margin-bottom:12px;font-size:13px"><span style="color:#FFB800;font-weight:700">🏆 </span><span style="color:#8896AA">${esc(rec.insight.bestChoice)}</span></div>`:""}
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-p" data-ridx="${i}" onclick="loadSaved(this)" style="flex:1">${ico.eye} Ver Resultados</button>
+          <button class="btn btn-d btn-sm" data-ridx="${i}" onclick="delSaved(this)">${ico.trash}</button>
+        </div>
+      </div>`;
+  }).join("");
+
+  document.getElementById("page-history").innerHTML=`
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <div>
+        <h2 style="color:#E8F0FE;font-size:20px;font-weight:800;margin-bottom:3px">Histórico</h2>
+        <p style="color:#4A5568;font-size:13px">${ST.saved.length} pesquisas salvas</p>
+      </div>
+      ${ST.saved.length?`<button class="btn btn-d btn-sm" onclick="clearSaved()">${ico.trash} Limpar</button>`:""}
+    </div>
+    ${ST.saved.length?items:`
+      <div style="text-align:center;padding:60px 20px;background:#111827;border-radius:18px;border:1px solid #1C2A3A">
+        <p style="color:#8896AA;font-size:16px;font-weight:700;margin-bottom:6px">Nenhuma pesquisa salva</p>
+        <p style="color:#4A5568;font-size:14px">Faça uma busca e clique em Salvar.</p>
+      </div>`}
+  `;
+}
+
+// Use index to avoid ID injection in onclick
+function loadSaved(btn){
+  const idx=parseInt(btn.getAttribute("data-ridx"));
+  const rec=ST.saved[idx];
+  if(!rec) return;
+  ST.query=rec.query;ST.results=rec.results||[];ST.insight=rec.insight||null;ST.meta=rec;ST.expandId=null;
+  nav("results");
+}
+function delSaved(btn){
+  const idx=parseInt(btn.getAttribute("data-ridx"));
+  ST.saved.splice(idx,1);
+  persist();renderHistory();
+}
+function clearSaved(){ST.saved=[];persist();toast("Limpo.");renderHistory()}
+
+
+async function testGeminiKey(){
+  try{
+    ST.lastError="";
+    toast("Testando Gemini...");
+    const raw=await callClaude('Responda somente este JSON: {"ok":true,"message":"Gemini funcionando"}', 200);
+    const p=parseJson(raw);
+    if(p&&p.ok){toast("Gemini funcionando!");}
+    else {toast("Gemini respondeu, mas fora do formato esperado","err");}
+  }catch(e){
+    ST.lastError=String(e.message||e);
+    toast("Erro Gemini: "+ST.lastError.slice(0,120),"err");
+    alert("Erro ao testar Gemini:
+
+"+ST.lastError);
+  }
+}
+
+// ═══════════════════════════════════════════
+// SETTINGS
+// ═══════════════════════════════════════════
+function renderSettings(){
+  const s=ST.settings;
+  const ex=50,tot=ex*s.usd+Number(s.freight),res=tot*(1+s.margin/100);
+  document.getElementById("page-settings").innerHTML=`
+    <h2 style="color:#E8F0FE;font-size:20px;font-weight:800;margin-bottom:20px">Configurações</h2>
+    <div style="display:flex;flex-direction:column;gap:14px">
+
+      <div class="card" style="border-color:rgba(0,212,255,.28)">
+        <p style="color:#00D4FF;font-size:13px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:7px">
+          🤖 Gemini API
+        </p>
+        <p style="color:#8896AA;font-size:13px;line-height:1.6;margin-bottom:14px">Cole a API Key criada na conta da sua responsável. Ela fica salva localmente neste aparelho/navegador.</p>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          <div>
+            <label class="lbl">Gemini API Key</label>
+            <input id="set-gemini-key" type="password" class="inp" placeholder="Cole a chave aqui" value="${esc(s.geminiApiKey||s.apiKey||"")}"/>
+          </div>
+          <div>
+            <label class="lbl">Modelo Gemini</label>
+            <select id="set-gemini-model" class="inp">
+              ${["gemini-2.5-flash-lite","gemini-2.5-flash","gemini-2.0-flash"].map(m=>`<option value="${m}" ${(s.geminiModel||"gemini-2.5-flash-lite")===m?"selected":""}>${m}</option>`).join("")}
+            </select>
+            <p style="color:#4A5568;font-size:11px;margin-top:5px">Flash-Lite economiza limite; Flash pode funcionar melhor em buscas difíceis.</p>
+          </div>
+          <button class="btn btn-g" onclick="saveSettings(); setTimeout(testGeminiKey,250)">Testar Gemini API</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <p style="color:#8896AA;font-size:12px;font-weight:700;text-transform:uppercase;margin-bottom:14px;letter-spacing:.5px">Câmbio manual</p>
+        <div class="g3">
+          <div><label class="lbl">USD→BRL</label><input id="set-usd" type="number" step=".01" class="inp" value="${s.usd}"/></div>
+          <div><label class="lbl">EUR→BRL</label><input id="set-eur" type="number" step=".01" class="inp" value="${s.eur}"/></div>
+          <div><label class="lbl">CNY→BRL</label><input id="set-cny" type="number" step=".01" class="inp" value="${s.cny}"/></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <p style="color:#8896AA;font-size:12px;font-weight:700;text-transform:uppercase;margin-bottom:14px;letter-spacing:.5px">Frete & Margem</p>
+        <div class="g2">
+          <div><label class="lbl">Frete padrão (R$)</label><input id="set-frt" type="number" step="1" class="inp" value="${s.freight}"/><p style="color:#4A5568;font-size:11px;margin-top:5px">Quando não aparecer</p></div>
+          <div><label class="lbl">Margem de lucro (%)</label><input id="set-mrg" type="number" step="1" class="inp" value="${s.margin}"/><p style="color:#4A5568;font-size:11px;margin-top:5px">Para sugestão de revenda</p></div>
+        </div>
+      </div>
+
+      <div style="background:linear-gradient(135deg,rgba(0,212,255,.09),rgba(0,102,255,.05));border:1px solid rgba(0,212,255,.28);border-radius:16px;padding:18px">
+        <p style="color:#00D4FF;font-size:13px;font-weight:700;margin-bottom:14px">🧮 Simulação: produto USD 50</p>
+        <div class="g2">
+          <div style="background:#070B14;border-radius:10px;padding:10px 12px"><p style="color:#4A5568;font-size:11px;margin-bottom:3px">Produto USD 50</p><p style="color:#E8F0FE;font-weight:700;font-size:15px">R$ ${fmt(ex*s.usd)}</p></div>
+          <div style="background:#070B14;border-radius:10px;padding:10px 12px"><p style="color:#4A5568;font-size:11px;margin-bottom:3px">Frete padrão</p><p style="color:#E8F0FE;font-weight:700;font-size:15px">R$ ${fmt(s.freight)}</p></div>
+          <div style="background:#070B14;border-radius:10px;padding:10px 12px"><p style="color:#4A5568;font-size:11px;margin-bottom:3px">Total importado</p><p style="color:#E8F0FE;font-weight:700;font-size:15px">R$ ${fmt(tot)}</p></div>
+          <div style="background:#070B14;border-radius:10px;padding:10px 12px"><p style="color:#4A5568;font-size:11px;margin-bottom:3px">Revenda (${s.margin}%)</p><p style="color:#00E5A0;font-weight:700;font-size:15px">R$ ${fmt(res)}</p></div>
+        </div>
+      </div>
+
+      <button class="btn btn-p" onclick="saveSettings()">${ico.save} Salvar Configurações</button>
+    </div>
+  `;
+  // settings rendered
+}
+
+function toggleKeyVis(){}
+
+function saveSettings(){
+  const get=id=>{const el=document.getElementById(id);return el?el.value:""};
+  ST.settings={
+    ...ST.settings,
+    usd: parseFloat(get("set-usd"))||5.10,
+    eur: parseFloat(get("set-eur"))||5.55,
+    cny: parseFloat(get("set-cny"))||0.70,
+    freight: parseFloat(get("set-frt"))||25,
+    margin: parseFloat(get("set-mrg"))||30,
+    geminiApiKey: get("set-gemini-key").trim(),
+    apiKey: get("set-gemini-key").trim(),
+    geminiModel: get("set-gemini-model")||"gemini-2.5-flash-lite",
+  };
+  if(ST.settings.geminiApiKey)localStorage.setItem("piq_gemini_key",ST.settings.geminiApiKey);
+  persist();
+  toast("Configurações salvas!");
+  renderSettings();
+}
+
+// ═══════════════════════════════════════════
+// BOOT — render initial view
+// ═══════════════════════════════════════════
+renderHome();
+</script>
+</body>
+</html>
