@@ -1,0 +1,17 @@
+{
+  "scripts": {
+    "build": "echo \"single-file app: www/index.html ready\"",
+    "sync": "npx cap sync android",
+    "open": "npx cap open android"
+  },
+  "dependencies": {
+    "@capacitor/android": "latest",
+    "@capacitor/core": "latest"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "latest"
+  },
+  "name": "priceiq-gemini-free",
+  "version": "1.0.0",
+  "private": true
+}

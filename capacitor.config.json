@@ -1,0 +1,6 @@
+{
+  "appId": "com.marco.priceiq",
+  "appName": "PriceIQ",
+  "webDir": "www",
+  "bundledWebRuntime": false
+}
