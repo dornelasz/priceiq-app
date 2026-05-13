@@ -173,6 +173,50 @@ function persist(){
 }
 
 // ══════════════════════════════════════════════════════
+// MIGRAÇÃO — garante que todos os fornecedores tenham url/site válidos
+// (versões antigas podem ter salvo sem o campo url no localStorage)
+// ══════════════════════════════════════════════════════
+function migrateSuppliers(){
+  const KNOWN_URLS={
+    "mercadolivre.com.br":"https://lista.mercadolivre.com.br/{q}",
+    "amazon.com.br":"https://www.amazon.com.br/s?k={q}",
+    "amazon.com":"https://www.amazon.com/s?k={q}",
+    "shopee.com.br":"https://shopee.com.br/search?keyword={q}",
+    "magazineluiza.com.br":"https://www.magazineluiza.com.br/busca/{q}/",
+    "aliexpress.com":"https://www.aliexpress.com/wholesale?SearchText={q}",
+    "alibaba.com":"https://www.alibaba.com/trade/search?SearchText={q}",
+    "americanas.com.br":"https://www.americanas.com.br/busca/{q}",
+    "submarino.com.br":"https://www.submarino.com.br/busca/{q}",
+    "casasbahia.com.br":"https://www.casasbahia.com.br/busca/{q}",
+  };
+  let changed=false;
+  ST.suppliers=(ST.suppliers||[]).filter(s=>s&&typeof s==="object").map(s=>{
+    const out={...s};
+    if(!out.id)out.id="sup"+Date.now()+Math.random().toString(36).slice(2,6);
+    if(!out.name)out.name=out.site||"Fornecedor";
+    if(!out.cur)out.cur="BRL";
+    if(!out.country)out.country="Brasil";
+    if(!out.type)out.type="Nacional";
+    if(typeof out.on!=="boolean")out.on=true;
+    // Campo crítico: site
+    if(!out.site&&out.url){
+      const m=String(out.url).match(/https?:\/\/([^\/]+)/);
+      if(m)out.site=m[1].replace(/^www\./,"");
+    }
+    if(!out.site)out.site="";
+    // Campo crítico: url
+    if(!out.url||typeof out.url!=="string"||!out.url.includes("{q}")){
+      const siteKey=String(out.site||"").replace(/^www\./,"").toLowerCase();
+      out.url=KNOWN_URLS[siteKey]||(out.site?`https://${out.site}/search?q={q}`:"");
+      changed=true;
+    }
+    return out;
+  }).filter(s=>s.site||s.url);
+  if(changed)persist();
+}
+migrateSuppliers();
+
+// ══════════════════════════════════════════════════════
 // HELPERS
 // ══════════════════════════════════════════════════════
 function esc(s){
@@ -501,16 +545,24 @@ function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
   if(!p.productName)return{found:false,reason:"nome ausente"};
   if(isUnwantedAccessory(p.productName,queryMeta))return{found:false,reason:"acessório indesejado"};
 
+  // Campos seguros do fornecedor
+  const safeSup=sup||{};
+  const supSite=String(safeSup.site||"").trim();
+  const supName=String(safeSup.name||supSite||"Fornecedor").trim();
+  const supCur=String(safeSup.cur||"BRL").trim().toUpperCase();
+  const supId=String(safeSup.id||"sup"+Date.now()).trim();
+
   // Link: usa o retornado se contiver o domínio do fornecedor; senão usa URL de busca
   let link=String(p.link||"");
-  const linkValid=link.startsWith("http")&&(link.includes(sup.site)||link.includes(sup.site.replace("www.","")));
-  if(!linkValid)link=fallbackSearchUrl;
+  const siteNoWww=supSite.replace(/^www\./,"");
+  const linkValid=link.startsWith("http")&&supSite&&(link.includes(supSite)||link.includes(siteNoWww));
+  if(!linkValid)link=fallbackSearchUrl||link||"";
 
   const freight=parseFloat(p.freight)||0;
   const priceMin=parseFloat(p.priceMin)||price;
   const priceMax=parseFloat(p.priceMax)||price;
   const total=price+freight;
-  const cur=String(p.currency||sup.cur).toUpperCase();
+  const cur=String(p.currency||supCur).toUpperCase();
   const rateUsed=cur==="USD"?set.usd:cur==="EUR"?set.eur:cur==="CNY"?set.cny:1;
   const brl=parseFloat((total*rateUsed).toFixed(2));
   const priceBRL=parseFloat((price*rateUsed).toFixed(2));
@@ -523,7 +575,7 @@ function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
     found:true,
     id:"r"+Date.now()+Math.random().toString(36).slice(2,6),
     productName:String(p.productName||product).slice(0,150),
-    supplier:sup.name,supId:sup.id,
+    supplier:supName,supId:supId,
     sellerName:String(p.sellerName||""),
     sellerRating:String(p.sellerRating||""),
     sellerReviews:parseInt(p.sellerReviews)||0,
@@ -557,8 +609,23 @@ function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
 // Busca um fornecedor: Jina Reader → Gemini parse (primário) | Gemini grounding (fallback)
 async function searchOneSupplier(product,sup,queryMeta){
   const set=ST.settings;
-  const isIntl=["aliexpress.com","alibaba.com","amazon.com"].includes(sup.site);
-  const searchUrl=sup.url.replace("{q}",encodeURIComponent(product));
+  // Defesa contra fornecedores corrompidos no localStorage
+  if(!sup||typeof sup!=="object")return{found:false,error:"fornecedor inválido"};
+  const supSite=String(sup.site||"").trim();
+  const supUrl=String(sup.url||"").trim();
+  const supName=String(sup.name||supSite||"Fornecedor").trim();
+  const supCur=String(sup.cur||"BRL").trim().toUpperCase();
+  if(!supSite&&!supUrl)return{found:false,error:"fornecedor sem site nem URL configurados"};
+  // Constrói URL de busca tolerante: usa sup.url se tiver {q}; senão monta a partir de site
+  let searchUrl;
+  if(supUrl&&supUrl.includes("{q}")){
+    searchUrl=supUrl.replace("{q}",encodeURIComponent(product));
+  }else if(supSite){
+    searchUrl=`https://${supSite.replace(/^https?:\/\//,"").replace(/\/$/,"")}/search?q=${encodeURIComponent(product)}`;
+  }else{
+    return{found:false,error:"não foi possível construir URL de busca"};
+  }
+  const isIntl=["aliexpress.com","alibaba.com","amazon.com"].includes(supSite);
   const lang=isIntl?"(search in English, translate product name if needed)":"(buscar em português)";
 
   // ── FASE 1: Jina Reader — conteúdo real da página de busca ──
@@ -566,14 +633,14 @@ async function searchOneSupplier(product,sup,queryMeta){
   try{
     pageContent=await fetchPageViaJina(searchUrl);
   }catch(e){
-    console.warn("[PriceIQ] Jina falhou para",sup.name,"—",e.message);
+    console.warn("[PriceIQ] Jina falhou para",supName,"—",e.message);
   }
 
   if(pageContent&&pageContent.length>300){
     // Temos conteúdo real: Gemini apenas extrai — sem grounding, sem invenção
-    const prompt=`Você é um extrator de dados de e-commerce. Analise o conteúdo abaixo (página de busca real do ${sup.name}) e extraia o produto que melhor corresponde a "${product}".
+    const prompt=`Você é um extrator de dados de e-commerce. Analise o conteúdo abaixo (página de busca real do ${supName}) e extraia o produto que melhor corresponde a "${product}".
 
-CONTEÚDO DA PÁGINA (${sup.site}):
+CONTEÚDO DA PÁGINA (${supSite}):
 ---
 ${pageContent}
 ---
@@ -585,7 +652,7 @@ TAREFA:
 4. Para o link: use a URL mais específica ao produto que aparecer no conteúdo. Se não tiver, use: ${searchUrl}
 
 RETORNE SOMENTE este JSON (nada mais antes ou depois):
-{"found":true,"productName":"nome real do produto","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${sup.cur}","link":"url","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"trecho que comprova o preço","exactMatchScore":85,"priceConfidence":85,"totalConfidence":85,"warnings":[],"note":""}
+{"found":true,"productName":"nome real do produto","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${supCur}","link":"url","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"trecho que comprova o preço","exactMatchScore":85,"priceConfidence":85,"totalConfidence":85,"warnings":[],"note":""}
 
 Se não encontrar "${product}" com preço real no conteúdo: {"found":false,"reason":"motivo"}`;
 
@@ -596,24 +663,24 @@ Se não encontrar "${product}" com preço real no conteúdo: {"found":false,"rea
       if(r.found)return r;
       // Se não achou no conteúdo Jina, cai no fallback de grounding
     }catch(e){
-      console.warn("[PriceIQ] Análise Jina falhou",sup.name,"—",e.message);
+      console.warn("[PriceIQ] Análise Jina falhou",supName,"—",e.message);
     }
   }
 
   // ── FASE 2: Gemini com Google Search grounding (fallback) ──
-  const prompt=`Você é um comparador de preços. Use Google Search para encontrar "${product}" em ${sup.site} e retorne APENAS o JSON abaixo com dados REAIS encontrados.
+  const prompt=`Você é um comparador de preços. Use Google Search para encontrar "${product}" em ${supSite} e retorne APENAS o JSON abaixo com dados REAIS encontrados.
 
 PRODUTO: "${product}" ${lang}
-SITE ALVO: ${sup.site} (${sup.name})
-MOEDA: ${sup.cur}
+SITE ALVO: ${supSite} (${supName})
+MOEDA: ${supCur}
 URL DE BUSCA: ${searchUrl}
 
-Instrução: pesquise "${product}" site:${sup.site} no Google Search agora.
+Instrução: pesquise "${product}" site:${supSite} no Google Search agora.
 NÃO retorne acessórios/cabos/capas/películas.
 Se encontrar múltiplos: escolha menor preço + melhor avaliação.
 
 RETORNE APENAS este JSON:
-{"found":true,"productName":"nome real","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${sup.cur}","link":"url ou ${searchUrl}","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"","exactMatchScore":75,"priceConfidence":75,"totalConfidence":75,"warnings":[],"note":""}
+{"found":true,"productName":"nome real","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${supCur}","link":"url ou ${searchUrl}","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"","exactMatchScore":75,"priceConfidence":75,"totalConfidence":75,"warnings":[],"note":""}
 
 Se não encontrar: {"found":false,"reason":"motivo"}`;
 
@@ -622,7 +689,7 @@ Se não encontrar: {"found":false,"reason":"motivo"}`;
     const p=parseJson(raw);
     return buildResult(p,product,sup,set,queryMeta,searchUrl);
   }catch(e){
-    console.error("[PriceIQ]",sup.name,e.message);
+    console.error("[PriceIQ]",supName,e.message);
     return{found:false,error:e.message};
   }
 }
@@ -1431,16 +1498,26 @@ function renderSuppliers(){
     </div>`).join("");
 
   document.getElementById("page-suppliers").innerHTML=`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div>
         <h2 style="color:#E8F0FE;font-size:20px;font-weight:800;margin-bottom:3px">Fornecedores</h2>
         <p style="color:#4A5568;font-size:13px">${ST.suppliers.length} cadastrados · ${active} ativos</p>
       </div>
       <button class="btn btn-p btn-sm" onclick="openNewSup()">${ico.plus} Adicionar</button>
     </div>
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <button class="btn btn-g btn-sm" onclick="resetSuppliers()" style="flex:1">${ico.refresh} Restaurar padrão</button>
+    </div>
     <div id="sup-form-area">${formHTML}</div>
     <div id="sup-list">${list}</div>
   `;
+}
+
+function resetSuppliers(){
+  if(!confirm("Restaurar a lista padrão de fornecedores? Isso substituirá os fornecedores atuais (não afeta histórico nem cotações)."))return;
+  ST.suppliers=JSON.parse(JSON.stringify(DEF_SUP));
+  ST.selIds=[];
+  persist();toast("Fornecedores restaurados!");renderSuppliers();
 }
 
 function buildSupForm(){
