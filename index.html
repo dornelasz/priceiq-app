@@ -369,31 +369,34 @@ function parseJson(raw){
 }
 
 // ══════════════════════════════════════════════════════
-// TAREFA 1 — COTAÇÃO REAL DE MOEDAS (Investing.com, cache 1h)
+// TAREFA 1 — COTAÇÃO REAL DE MOEDAS (Yahoo Finance, atualiza a cada 1min)
 // ══════════════════════════════════════════════════════
 const RATE_TTL=60000; // 1 minuto em ms
 
-// Busca taxa de uma moeda diretamente do Investing.com via Jina (precisão 4 decimais)
-async function fetchInvestingRate(pair){
-  const slug=pair.toLowerCase()+"-brl";
-  const r=await fetch("https://r.jina.ai/https://br.investing.com/currencies/"+slug,{
-    headers:{"Accept":"text/plain","X-Return-Format":"text"},
-    signal:AbortSignal.timeout(8000),
-    cache:"no-store"
-  });
-  if(!r.ok)throw new Error("Investing HTTP "+r.status);
-  const txt=await r.text();
-  // Procura o preço atual perto do indicador do par
-  const pairUpper=pair.toUpperCase()+"/BRL";
-  const idx=txt.indexOf(pairUpper);
-  const area=idx>=0?txt.slice(idx,idx+1200):txt.slice(0,3000);
-  // Procura o primeiro número plausível com 2-4 decimais (taxa de câmbio)
-  const matches=area.match(/\b(\d{1,2}[.,]\d{2,4})\b/g)||[];
-  for(const m of matches){
-    const n=parseFloat(m.replace(",","."));
-    if(n>0.05&&n<30)return n;
+// Busca taxa real de mercado via Yahoo Finance (mesma fonte de dados que a Investing.com)
+// Retorna JSON estruturado — sem regex frágil. Updates a cada 1 minuto.
+async function fetchYahooRate(pair){
+  const symbol=pair.toUpperCase()+"BRL=X";
+  const yahooBase=`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`;
+  // Yahoo Finance não envia CORS — usar proxies gratuitos
+  const endpoints=[
+    "https://corsproxy.io/?"+encodeURIComponent(yahooBase),
+    "https://api.allorigins.win/raw?url="+encodeURIComponent(yahooBase),
+    "https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(yahooBase),
+  ];
+  for(const url of endpoints){
+    try{
+      const r=await fetch(url,{cache:"no-store",signal:AbortSignal.timeout(8000)});
+      if(!r.ok)continue;
+      const d=await r.json();
+      const meta=d&&d.chart&&d.chart.result&&d.chart.result[0]&&d.chart.result[0].meta;
+      const price=meta&&meta.regularMarketPrice;
+      if(typeof price==="number"&&price>0.01&&price<100)return price;
+    }catch(e){
+      console.warn("[Yahoo proxy falhou]",url.slice(0,40),e.message);
+    }
   }
-  throw new Error("taxa não encontrada na Investing");
+  throw new Error("Yahoo Finance falhou em todos os proxies");
 }
 
 async function fetchLiveRates(force=false){
@@ -410,12 +413,12 @@ async function fetchLiveRates(force=false){
   ST.rateLoading=true;
   updateNavRateSub();
 
-  // FONTE PRIMÁRIA — Investing.com via Jina (4 decimais, mesma fonte que o usuário pediu)
+  // FONTE PRIMÁRIA — Yahoo Finance (= mesma fonte spot da Investing.com, JSON real-time, 4 decimais)
   try{
     const [usd,eur,cny]=await Promise.all([
-      fetchInvestingRate("usd").catch(()=>null),
-      fetchInvestingRate("eur").catch(()=>null),
-      fetchInvestingRate("cny").catch(()=>null),
+      fetchYahooRate("USD").catch(()=>null),
+      fetchYahooRate("EUR").catch(()=>null),
+      fetchYahooRate("CNY").catch(()=>null),
     ]);
     if(usd>1&&eur>1&&cny>0){
       const now=Date.now();
@@ -424,18 +427,18 @@ async function fetchLiveRates(force=false){
         usd:parseFloat(usd.toFixed(4)),
         cny:parseFloat(cny.toFixed(4)),
         eur:parseFloat(eur.toFixed(4)),
-        rateSource:"Investing.com",
+        rateSource:"Yahoo Finance",
         rateTime:timeStr,
         rateTimestamp:now
       };
       persist();
       ST.rateLoading=false;
       updateNavRateSub();
-      return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"Investing.com",time:timeStr,fromCache:false};
+      return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"Yahoo Finance",time:timeStr,fromCache:false};
     }
-    throw new Error("Investing não retornou as 3 cotações");
+    throw new Error("Yahoo não retornou as 3 cotações");
   }catch(e){
-    console.warn("[PriceIQ rates Investing]",e.message);
+    console.warn("[PriceIQ rates Yahoo]",e.message);
   }
 
   // FONTE SECUNDÁRIA — AwesomeAPI.com.br (Brasil, mid = (bid+ask)/2 para máxima precisão)
