@@ -365,7 +365,7 @@ function parseJson(raw){
 // ══════════════════════════════════════════════════════
 // TAREFA 1 — COTAÇÃO REAL DE MOEDAS (Investing.com, cache 1h)
 // ══════════════════════════════════════════════════════
-const RATE_TTL=3600000; // 1 hora em ms
+const RATE_TTL=60000; // 1 minuto em ms
 
 async function fetchLiveRates(force=false){
   const s=ST.settings;
@@ -533,8 +533,21 @@ async function fetchPageViaJina(url){
   });
   if(!r.ok)throw new Error("Jina HTTP "+r.status);
   const txt=await r.text();
-  // Retorna os primeiros 5000 chars — suficiente para ver lista de resultados
-  return txt.slice(0,5000);
+  // Retorna os primeiros 8000 chars — suficiente para ver lista de resultados
+  return txt.slice(0,8000);
+}
+
+// Detecta se uma URL aponta para uma página de produto específico (não busca/categoria)
+function isProductUrl(url){
+  if(!url||!url.startsWith("http"))return false;
+  return(
+    /\/MLB\d{5,}/.test(url)||           // Mercado Livre
+    /\/dp\/[A-Z0-9]{8,}/.test(url)||    // Amazon BR/USA
+    /-i\.\d{5,}\.\d{5,}/.test(url)||    // Shopee
+    /\/p\/[a-z0-9]{8,}[\/.]/.test(url)|| // Magalu
+    /\/item\/\d{8,}/.test(url)||         // AliExpress
+    /\/product[-_]detail\//i.test(url)   // Alibaba
+  );
 }
 
 // Converte resposta bruta do Gemini em objeto de resultado padronizado
@@ -557,6 +570,7 @@ function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
   const siteNoWww=supSite.replace(/^www\./,"");
   const linkValid=link.startsWith("http")&&supSite&&(link.includes(supSite)||link.includes(siteNoWww));
   if(!linkValid)link=fallbackSearchUrl||link||"";
+  const linkType=isProductUrl(link)?"product":"search";
 
   const freight=parseFloat(p.freight)||0;
   const priceMin=parseFloat(p.priceMin)||price;
@@ -592,7 +606,7 @@ function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
     freightNote:String(p.freightNote||"não encontrado"),
     freightSourceText:String(p.freightSourceText||""),
     needsManualFreightCheck:!p.freightNote||p.freightNote==="não encontrado",
-    link,
+    link,linkType,
     available:p.available!==false,
     sellers:parseInt(p.sellers)||1,
     priceType:String(p.priceType||"real"),
@@ -606,17 +620,16 @@ function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
   };
 }
 
-// Busca um fornecedor: Jina Reader → Gemini parse (primário) | Gemini grounding (fallback)
+// Busca um fornecedor em 2 fases, ambas usando Jina Reader (sem grounding para evitar invenção)
 async function searchOneSupplier(product,sup,queryMeta){
   const set=ST.settings;
-  // Defesa contra fornecedores corrompidos no localStorage
   if(!sup||typeof sup!=="object")return{found:false,error:"fornecedor inválido"};
   const supSite=String(sup.site||"").trim();
   const supUrl=String(sup.url||"").trim();
   const supName=String(sup.name||supSite||"Fornecedor").trim();
   const supCur=String(sup.cur||"BRL").trim().toUpperCase();
   if(!supSite&&!supUrl)return{found:false,error:"fornecedor sem site nem URL configurados"};
-  // Constrói URL de busca tolerante: usa sup.url se tiver {q}; senão monta a partir de site
+
   let searchUrl;
   if(supUrl&&supUrl.includes("{q}")){
     searchUrl=supUrl.replace("{q}",encodeURIComponent(product));
@@ -625,73 +638,92 @@ async function searchOneSupplier(product,sup,queryMeta){
   }else{
     return{found:false,error:"não foi possível construir URL de busca"};
   }
-  const isIntl=["aliexpress.com","alibaba.com","amazon.com"].includes(supSite);
-  const lang=isIntl?"(search in English, translate product name if needed)":"(buscar em português)";
 
-  // ── FASE 1: Jina Reader — conteúdo real da página de busca ──
+  const jsonTpl=`{"found":true,"productName":"nome real","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${supCur}","link":"url","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"trecho do preço","exactMatchScore":80,"priceConfidence":80,"totalConfidence":80,"warnings":[],"note":""}`;
+
+  // ── FASE 1: Jina Reader na página de busca do site ──
   let pageContent="";
   try{
     pageContent=await fetchPageViaJina(searchUrl);
   }catch(e){
-    console.warn("[PriceIQ] Jina falhou para",supName,"—",e.message);
+    console.warn("[PriceIQ] Jina:searchPage falhou",supName,e.message);
   }
 
   if(pageContent&&pageContent.length>300){
-    // Temos conteúdo real: Gemini apenas extrai — sem grounding, sem invenção
-    const prompt=`Você é um extrator de dados de e-commerce. Analise o conteúdo abaixo (página de busca real do ${supName}) e extraia o produto que melhor corresponde a "${product}".
+    const prompt=`Extrator de e-commerce. Analise a página de busca real do ${supName} e retorne o melhor produto "${product}".
 
 CONTEÚDO DA PÁGINA (${supSite}):
 ---
-${pageContent}
+${pageContent.slice(0,7000)}
 ---
 
-TAREFA:
-1. Encontre "${product}" neste conteúdo. NÃO retorne acessórios/cabos/capas/películas a menos que o usuário tenha pedido.
-2. Se houver múltiplos resultados, escolha o melhor: menor preço + melhor avaliação (score = avaliação*20 + reviews/50 - preço_relativo*10).
-3. Extraia APENAS dados que aparecem no texto. NÃO invente nada.
-4. Para o link: use a URL mais específica ao produto que aparecer no conteúdo. Se não tiver, use: ${searchUrl}
+REGRAS:
+1. NÃO retorne acessórios/capas/cabos/películas a menos que o usuário pediu.
+2. Se múltiplos: escolha menor preço + melhor avaliação.
+3. Extraia SOMENTE dados visíveis no texto. NÃO invente nada.
+4. Para "link": procure URLs de produto específico no conteúdo:
+   - Mercado Livre: contém /MLB (ex: /p/MLB1234567 ou MLB-1234567890)
+   - Amazon: contém /dp/ seguido de código (ex: /dp/B0ABC12345)
+   - Shopee: contém -i. com dois números (ex: -i.123456.987654)
+   - Magalu: contém /p/ com código alfanumérico (ex: /p/abc12345xp/)
+   - AliExpress: contém /item/ com número longo (ex: /item/1234567890.html)
+   - Alibaba: contém /product-detail/
+   Se não encontrar URL de produto específico, use exatamente: "${searchUrl}"
+5. Se não encontrar "${product}" com preço real: {"found":false,"reason":"..."}
 
-RETORNE SOMENTE este JSON (nada mais antes ou depois):
-{"found":true,"productName":"nome real do produto","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${supCur}","link":"url","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"trecho que comprova o preço","exactMatchScore":85,"priceConfidence":85,"totalConfidence":85,"warnings":[],"note":""}
-
-Se não encontrar "${product}" com preço real no conteúdo: {"found":false,"reason":"motivo"}`;
+RETORNE APENAS este JSON:
+${jsonTpl}`;
 
     try{
-      const raw=await callGemini(prompt,900,false); // false = sem grounding (temos o conteúdo)
+      const raw=await callGemini(prompt,1000,false);
       const p=parseJson(raw);
       const r=buildResult(p,product,sup,set,queryMeta,searchUrl);
       if(r.found)return r;
-      // Se não achou no conteúdo Jina, cai no fallback de grounding
     }catch(e){
-      console.warn("[PriceIQ] Análise Jina falhou",supName,"—",e.message);
+      console.warn("[PriceIQ] Gemini:parse:searchPage falhou",supName,e.message);
     }
   }
 
-  // ── FASE 2: Gemini com Google Search grounding (fallback) ──
-  const prompt=`Você é um comparador de preços. Use Google Search para encontrar "${product}" em ${supSite} e retorne APENAS o JSON abaixo com dados REAIS encontrados.
+  // ── FASE 2: Jina no Google Search (busca produto no site específico) ──
+  // Sem grounding — Google via Jina retorna dados reais indexados, sem invenção
+  const gQuery=encodeURIComponent(product+" site:"+supSite);
+  const googleUrl=`https://www.google.com/search?q=${gQuery}&hl=pt-BR&num=5`;
+  let googleContent="";
+  try{
+    googleContent=await fetchPageViaJina(googleUrl);
+  }catch(e){
+    console.warn("[PriceIQ] Jina:google falhou",supName,e.message);
+  }
 
-PRODUTO: "${product}" ${lang}
-SITE ALVO: ${supSite} (${supName})
-MOEDA: ${supCur}
-URL DE BUSCA: ${searchUrl}
+  if(googleContent&&googleContent.length>200){
+    const prompt=`Analise os resultados do Google para "${product}" no site ${supSite}.
 
-Instrução: pesquise "${product}" site:${supSite} no Google Search agora.
-NÃO retorne acessórios/cabos/capas/películas.
-Se encontrar múltiplos: escolha menor preço + melhor avaliação.
+RESULTADOS DO GOOGLE:
+---
+${googleContent.slice(0,6000)}
+---
+
+TAREFA:
+1. Encontre "${product}" nos snippets do Google que sejam de ${supSite}.
+2. Extraia o link direto ao produto (deve conter ${supSite} e ter padrão de ID como /MLB, /dp/, /item/).
+   Se não encontrar URL de produto direto, use: "${searchUrl}"
+3. Extraia preço SOMENTE se visível no snippet. Se não aparecer preço: {"found":false,"reason":"preço não visível no Google"}
+4. NÃO invente nenhum dado.
 
 RETORNE APENAS este JSON:
-{"found":true,"productName":"nome real","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${supCur}","link":"url ou ${searchUrl}","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"","exactMatchScore":75,"priceConfidence":75,"totalConfidence":75,"warnings":[],"note":""}
+${jsonTpl}`;
 
-Se não encontrar: {"found":false,"reason":"motivo"}`;
-
-  try{
-    const raw=await callGemini(prompt,900,true); // true = com grounding
-    const p=parseJson(raw);
-    return buildResult(p,product,sup,set,queryMeta,searchUrl);
-  }catch(e){
-    console.error("[PriceIQ]",supName,e.message);
-    return{found:false,error:e.message};
+    try{
+      const raw=await callGemini(prompt,1000,false);
+      const p=parseJson(raw);
+      const r=buildResult(p,product,sup,set,queryMeta,searchUrl);
+      if(r.found)return r;
+    }catch(e){
+      console.warn("[PriceIQ] Gemini:parse:google falhou",supName,e.message);
+    }
   }
+
+  return{found:false,error:"produto não encontrado em "+supName};
 }
 
 // ── FUNÇÃO LEGADA (mantida para compatibilidade, não é chamada) ──
@@ -1030,7 +1062,10 @@ async function doSearch(){
     const sup=targets[i];
     ST.progDone=i;ST.progCur=sup.name;updateProg();
     try{
-      const r=await searchOneSupplier(q,sup,queryMeta);
+      const r=await Promise.race([
+        searchOneSupplier(q,sup,queryMeta),
+        new Promise((_,rej)=>setTimeout(()=>rej(new Error("tempo esgotado para "+sup.name)),55000))
+      ]);
       if(r.found){
         ST.results.push(r);
         ST.results.sort((a,b)=>a.brl-b.brl);
@@ -1363,10 +1398,14 @@ function buildCards(){
         </div>
         <!-- Botões — todos com mesmo estilo base -->
         <div class="arow">
-          <a href="${esc(r.link)}" target="_blank" rel="noopener noreferrer" class="arow-btn primary">${ico.link} Ver Produto</a>
+          <a href="${esc(r.link)}" target="_blank" rel="noopener noreferrer" class="arow-btn${r.linkType==="product"?" primary":""}" title="${r.linkType==="product"?"Link direto ao produto":"Link para busca no site — produto real encontrado, abra e procure pelo nome"}">
+            ${r.linkType==="product"?ico.link:ico.search}
+            ${r.linkType==="product"?"Ver Produto":"Buscar no site"}
+          </a>
           <button class="arow-btn icon-only" data-rid="${esc(r.id)}" onclick="toggleExpand(this)" title="Detalhes">${ico.eye}</button>
           <button class="arow-btn icon-only danger" data-rid="${esc(r.id)}" onclick="delResult(this)" title="Remover">${ico.trash}</button>
         </div>
+        ${r.linkType!=="product"?`<p style="color:#FFB800;font-size:10px;margin-top:4px">${ico.alert} Link de busca — produto encontrado no site, mas sem link direto. Procure pelo nome após abrir.</p>`:""}
         <!-- Horário -->
         <p style="color:#4A5568;font-size:10px;margin-top:8px;text-align:right">${fmtDate(r.ts)}</p>
       </div>
@@ -1696,7 +1735,7 @@ function renderSettings(){
 
       <!-- Cotação ao vivo -->
       <div class="card" style="border-color:rgba(0,212,255,.28)">
-        <p style="color:#00D4FF;font-size:13px;font-weight:700;text-transform:uppercase;margin-bottom:14px;letter-spacing:.5px">💱 Cotação ao vivo — automática (1h)</p>
+        <p style="color:#00D4FF;font-size:13px;font-weight:700;text-transform:uppercase;margin-bottom:14px;letter-spacing:.5px">💱 Cotação ao vivo — automática (1min)</p>
         <div class="g3" style="margin-bottom:14px">
           <div style="background:#070B14;border-radius:10px;padding:10px 12px">
             <p style="color:#4A5568;font-size:10px;margin-bottom:3px">USD/BRL</p>
@@ -1720,7 +1759,7 @@ function renderSettings(){
       <!-- Câmbio manual -->
       <div class="card">
         <p style="color:#8896AA;font-size:12px;font-weight:700;text-transform:uppercase;margin-bottom:6px;letter-spacing:.5px">✏️ Correção manual de câmbio</p>
-        <p style="color:#4A5568;font-size:11px;margin-bottom:14px">Edite os valores e clique em <strong style="color:#8896AA">Salvar</strong> para aplicar imediatamente. A cotação manual será usada por 1 hora antes da próxima atualização automática.</p>
+        <p style="color:#4A5568;font-size:11px;margin-bottom:14px">Edite os valores e clique em <strong style="color:#8896AA">Salvar</strong> para aplicar imediatamente. A cotação manual será usada por 1 minuto antes da próxima atualização automática.</p>
         <div class="g3">
           <div><label class="lbl">USD→BRL</label><input id="set-usd" type="number" step=".0001" class="inp" value="${s.usd}"/></div>
           <div><label class="lbl">EUR→BRL</label><input id="set-eur" type="number" step=".0001" class="inp" value="${s.eur}"/></div>
@@ -1786,7 +1825,7 @@ function saveSettings(){
     apiKey:String(g("set-api")||ST.settings.apiKey||"").trim(),
     geminiModel:String(g("set-model")||ST.settings.geminiModel||"gemini-2.5-flash-lite").trim(),
     // Quando o usuário altera taxas manualmente, marca como manual e atualiza timestamp
-    // para que fetchLiveRates() trate os valores novos como cache válido por 1h
+    // para que fetchLiveRates() trate os valores novos como cache válido por 1min
     ...(ratesChanged?{rateSource:"manual",rateTime:timeStr,rateTimestamp:Date.now()}:{})
   };
   LS.s("piq_gemini_key",ST.settings.apiKey);
@@ -1807,7 +1846,7 @@ fetchLiveRates().then(()=>{
   if(ST.view==="home")renderHome();
   if(ST.view==="settings")renderSettings();
 }).catch(()=>{});
-// Auto-refresh de cotação a cada 1 hora
+// Auto-refresh de cotação a cada 1 minuto
 setInterval(()=>{
   fetchLiveRates(true).then(()=>{
     updateNavRateSub();
