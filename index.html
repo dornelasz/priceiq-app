@@ -468,47 +468,166 @@ function interpretQuery(rawQuery){
 }
 
 // ══════════════════════════════════════════════════════
-// TAREFA 11 — VALIDAÇÃO JS PÓS-RETORNO
+// VALIDAÇÃO — apenas rejeições críticas
 // ══════════════════════════════════════════════════════
-function validateResult(p,queryMeta,sup){
-  const reasons=[];
-
-  // 1. Campos obrigatórios
-  if(!p.found||!p.productName||!(p.price>0))return{ok:false,reasons:["dados básicos ausentes"]};
-
-  // 2. Link real — deve conter domínio do fornecedor
-  const linkOk=p.link&&p.link.includes("http")&&(p.link.includes(sup.site)||p.link.includes(sup.site.replace("www.","")));
-  if(!linkOk){reasons.push("link não pertence ao fornecedor")}
-
-  // 3. Scores mínimos
-  const exact=parseInt(p.exactMatchScore)||0;
-  const priceConf=parseInt(p.priceConfidence)||0;
-  const total=parseInt(p.totalConfidence)||0;
-  if(exact<60)reasons.push(`exactMatchScore baixo (${exact})`);
-  if(priceConf<60)reasons.push(`priceConfidence baixo (${priceConf})`);
-  if(total<60)reasons.push(`totalConfidence baixo (${total})`);
-
-  // 4. Exclusão inteligente — só rejeita acessórios se o usuário não buscou acessório
-  if(!queryMeta.isSearchingAccessory){
-    const nameLower=(p.productName||"").toLowerCase();
-    const rejected=queryMeta.exclusionTerms.find(term=>nameLower.includes(term));
-    if(rejected)reasons.push(`produto é acessório indesejado: "${rejected}"`);
-  }
-
-  // 5. Preço absurdo (sanity check por categoria)
-  if(p.price>5000000)reasons.push("preço absurdo");
-  if(p.price<0.01)reasons.push("preço zerado ou negativo");
-
-  // 6. priceType inválido
-  if(p.priceType==="não_encontrado")reasons.push("preço não encontrado");
-
-  const ok=reasons.length===0;
-  return{ok,reasons};
+function isUnwantedAccessory(name,queryMeta){
+  if(queryMeta.isSearchingAccessory)return false;
+  const n=(name||"").toLowerCase();
+  return queryMeta.exclusionTerms.some(t=>n.includes(t));
 }
 
 // ══════════════════════════════════════════════════════
-// TAREFA 2+4+5+6+7+8+9+10 — BUSCA REAL COM PROMPT COMPLETO
+// BUSCA — Jina Reader + Gemini (sem grounding obrigatório)
 // ══════════════════════════════════════════════════════
+
+// Busca conteúdo real de uma URL via Jina Reader (gratuito, sem chave)
+async function fetchPageViaJina(url){
+  const endpoint="https://r.jina.ai/"+url;
+  const r=await fetch(endpoint,{
+    headers:{"Accept":"text/plain","X-Return-Format":"text","X-Timeout":"15"},
+    signal:AbortSignal.timeout(20000)
+  });
+  if(!r.ok)throw new Error("Jina HTTP "+r.status);
+  const txt=await r.text();
+  // Retorna os primeiros 5000 chars — suficiente para ver lista de resultados
+  return txt.slice(0,5000);
+}
+
+// Converte resposta bruta do Gemini em objeto de resultado padronizado
+function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
+  if(!p||!p.found)return{found:false};
+  const price=parseFloat(p.price)||0;
+  if(price<=0||price>5000000)return{found:false,reason:"preço inválido"};
+  if(!p.productName)return{found:false,reason:"nome ausente"};
+  if(isUnwantedAccessory(p.productName,queryMeta))return{found:false,reason:"acessório indesejado"};
+
+  // Link: usa o retornado se contiver o domínio do fornecedor; senão usa URL de busca
+  let link=String(p.link||"");
+  const linkValid=link.startsWith("http")&&(link.includes(sup.site)||link.includes(sup.site.replace("www.","")));
+  if(!linkValid)link=fallbackSearchUrl;
+
+  const freight=parseFloat(p.freight)||0;
+  const priceMin=parseFloat(p.priceMin)||price;
+  const priceMax=parseFloat(p.priceMax)||price;
+  const total=price+freight;
+  const cur=String(p.currency||sup.cur).toUpperCase();
+  const rateUsed=cur==="USD"?set.usd:cur==="EUR"?set.eur:cur==="CNY"?set.cny:1;
+  const brl=parseFloat((total*rateUsed).toFixed(2));
+  const priceBRL=parseFloat((price*rateUsed).toFixed(2));
+  const freightBRL=parseFloat((freight*rateUsed).toFixed(2));
+  const minBrl=parseFloat((priceMin*rateUsed).toFixed(2));
+  const maxBrl=parseFloat((priceMax*rateUsed).toFixed(2));
+  const ratePair=cur==="BRL"?"BRL":cur+"/BRL";
+
+  return{
+    found:true,
+    id:"r"+Date.now()+Math.random().toString(36).slice(2,6),
+    productName:String(p.productName||product).slice(0,150),
+    supplier:sup.name,supId:sup.id,
+    sellerName:String(p.sellerName||""),
+    sellerRating:String(p.sellerRating||""),
+    sellerReviews:parseInt(p.sellerReviews)||0,
+    productRating:String(p.productRating||p.rating||""),
+    productReviews:parseInt(p.productReviews||p.reviews)||0,
+    price,priceMin,priceMax,
+    currency:cur,originalCurrency:cur,
+    exchangePair:ratePair,exchangeRateUsed:rateUsed,
+    priceBRL,
+    rateSource:set.rateSource||"manual",rateTime:set.rateTime||"",rateTimestamp:set.rateTimestamp||0,
+    freight,total,brl,freightBRL,
+    priceMinBrl:minBrl,priceMaxBrl:maxBrl,
+    freeShip:["grátis confirmado","grátis","free"].includes(String(p.freightNote||"").toLowerCase()),
+    freightNote:String(p.freightNote||"não encontrado"),
+    freightSourceText:String(p.freightSourceText||""),
+    needsManualFreightCheck:!p.freightNote||p.freightNote==="não encontrado",
+    link,
+    available:p.available!==false,
+    sellers:parseInt(p.sellers)||1,
+    priceType:String(p.priceType||"real"),
+    priceSourceText:String(p.priceSourceText||""),
+    exactMatchScore:parseInt(p.exactMatchScore)||75,
+    priceConfidence:parseInt(p.priceConfidence)||75,
+    totalConfidence:parseInt(p.totalConfidence)||75,
+    warnings:Array.isArray(p.warnings)?p.warnings:[],
+    note:String(p.note||""),
+    ts:new Date().toISOString()
+  };
+}
+
+// Busca um fornecedor: Jina Reader → Gemini parse (primário) | Gemini grounding (fallback)
+async function searchOneSupplier(product,sup,queryMeta){
+  const set=ST.settings;
+  const isIntl=["aliexpress.com","alibaba.com","amazon.com"].includes(sup.site);
+  const searchUrl=sup.url.replace("{q}",encodeURIComponent(product));
+  const lang=isIntl?"(search in English, translate product name if needed)":"(buscar em português)";
+
+  // ── FASE 1: Jina Reader — conteúdo real da página de busca ──
+  let pageContent="";
+  try{
+    pageContent=await fetchPageViaJina(searchUrl);
+  }catch(e){
+    console.warn("[PriceIQ] Jina falhou para",sup.name,"—",e.message);
+  }
+
+  if(pageContent&&pageContent.length>300){
+    // Temos conteúdo real: Gemini apenas extrai — sem grounding, sem invenção
+    const prompt=`Você é um extrator de dados de e-commerce. Analise o conteúdo abaixo (página de busca real do ${sup.name}) e extraia o produto que melhor corresponde a "${product}".
+
+CONTEÚDO DA PÁGINA (${sup.site}):
+---
+${pageContent}
+---
+
+TAREFA:
+1. Encontre "${product}" neste conteúdo. NÃO retorne acessórios/cabos/capas/películas a menos que o usuário tenha pedido.
+2. Se houver múltiplos resultados, escolha o melhor: menor preço + melhor avaliação (score = avaliação*20 + reviews/50 - preço_relativo*10).
+3. Extraia APENAS dados que aparecem no texto. NÃO invente nada.
+4. Para o link: use a URL mais específica ao produto que aparecer no conteúdo. Se não tiver, use: ${searchUrl}
+
+RETORNE SOMENTE este JSON (nada mais antes ou depois):
+{"found":true,"productName":"nome real do produto","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${sup.cur}","link":"url","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"trecho que comprova o preço","exactMatchScore":85,"priceConfidence":85,"totalConfidence":85,"warnings":[],"note":""}
+
+Se não encontrar "${product}" com preço real no conteúdo: {"found":false,"reason":"motivo"}`;
+
+    try{
+      const raw=await callGemini(prompt,900,false); // false = sem grounding (temos o conteúdo)
+      const p=parseJson(raw);
+      const r=buildResult(p,product,sup,set,queryMeta,searchUrl);
+      if(r.found)return r;
+      // Se não achou no conteúdo Jina, cai no fallback de grounding
+    }catch(e){
+      console.warn("[PriceIQ] Análise Jina falhou",sup.name,"—",e.message);
+    }
+  }
+
+  // ── FASE 2: Gemini com Google Search grounding (fallback) ──
+  const prompt=`Você é um comparador de preços. Use Google Search para encontrar "${product}" em ${sup.site} e retorne APENAS o JSON abaixo com dados REAIS encontrados.
+
+PRODUTO: "${product}" ${lang}
+SITE ALVO: ${sup.site} (${sup.name})
+MOEDA: ${sup.cur}
+URL DE BUSCA: ${searchUrl}
+
+Instrução: pesquise "${product}" site:${sup.site} no Google Search agora.
+NÃO retorne acessórios/cabos/capas/películas.
+Se encontrar múltiplos: escolha menor preço + melhor avaliação.
+
+RETORNE APENAS este JSON:
+{"found":true,"productName":"nome real","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${sup.cur}","link":"url ou ${searchUrl}","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"","exactMatchScore":75,"priceConfidence":75,"totalConfidence":75,"warnings":[],"note":""}
+
+Se não encontrar: {"found":false,"reason":"motivo"}`;
+
+  try{
+    const raw=await callGemini(prompt,900,true); // true = com grounding
+    const p=parseJson(raw);
+    return buildResult(p,product,sup,set,queryMeta,searchUrl);
+  }catch(e){
+    console.error("[PriceIQ]",sup.name,e.message);
+    return{found:false,error:e.message};
+  }
+}
+
+// ── FUNÇÃO LEGADA (mantida para compatibilidade, não é chamada) ──
 async function searchSupplier(product,sup,queryMeta){
   const set=ST.settings;
   const isIntl=["aliexpress.com","alibaba.com","amazon.com"].includes(sup.site);
@@ -819,7 +938,7 @@ RETORNE APENAS JSON VÁLIDO neste formato exato:
 }
 
 // ══════════════════════════════════════════════════════
-// SEARCH FLOW
+// SEARCH FLOW — por fornecedor, com progresso ao vivo
 // ══════════════════════════════════════════════════════
 async function doSearch(){
   const inp=document.getElementById("q-inp");
@@ -832,33 +951,45 @@ async function doSearch(){
 
   ST.query=q;
   ST.searching=true;ST.results=[];ST.insight=null;ST.meta=null;ST.expandId=null;ST.searchErrors=[];
-  ST.progDone=0;ST.progTotal=targets.length;ST.progCur="Preparando cotação";
+  ST.progDone=0;ST.progTotal=targets.length;ST.progCur=targets[0]?.name||"";
   nav("results");
 
   const queryMeta=interpretQuery(q);
-
-  // Cotação atualiza de hora em hora sem gastar Gemini.
   const hasIntl=targets.some(s=>s.cur!=="BRL");
   if(hasIntl)await fetchLiveRates();
 
-  ST.progCur="Buscando em "+targets.length+" fornecedor(es)";updateProg();
-  try{
-    const found=await searchAllSuppliers(q,targets,queryMeta);
-    ST.results=found.sort((a,b)=>a.brl-b.brl);
-  }catch(e){
-    const msg=e?.message||String(e);
-    console.error("[PriceIQ search]",msg);
-    ST.searchErrors.push({supplier:"Gemini",message:msg});
-    toast("Busca falhou: "+msg,"err");
+  // ── Busca fornecedor por fornecedor com resultado ao vivo ──
+  for(let i=0;i<targets.length;i++){
+    const sup=targets[i];
+    ST.progDone=i;ST.progCur=sup.name;updateProg();
+    try{
+      const r=await searchOneSupplier(q,sup,queryMeta);
+      if(r.found){
+        ST.results.push(r);
+        ST.results.sort((a,b)=>a.brl-b.brl);
+        renderResultCards();
+      }else if(r.error){
+        ST.searchErrors.push({supplier:sup.name,message:r.error});
+      }
+    }catch(e){
+      console.error("[PriceIQ]",sup.name,e);
+      ST.searchErrors.push({supplier:sup.name,message:e.message||String(e)});
+    }
+    ST.progDone=i+1;updateProg();
   }
 
-  ST.progDone=targets.length;updateProg();
   ST.searching=false;
   const m={id:"s"+Date.now(),query:q,ts:new Date().toISOString(),
     count:ST.results.length,bestBRL:ST.results[0]?.brl||0,bestSup:ST.results[0]?.supplier||""};
   ST.meta=m;
   ST.history=[m,...ST.history.slice(0,49)];
   persist();renderResults();
+
+  // Mostra erros se não houve nenhum resultado
+  if(!ST.results.length&&ST.searchErrors.length){
+    const errMsg=ST.searchErrors.map(e=>e.supplier+": "+e.message).join(" | ");
+    toast("Nenhum resultado. Erros: "+errMsg.slice(0,120),"err");
+  }
 
   if(ST.results.length){
     ST.aiLoading=true;renderAiBox();
