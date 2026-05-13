@@ -337,9 +337,38 @@ async function fetchLiveRates(force=false){
   ST.rateLoading=true;
   updateNavRateSub();
 
+  // FONTE PRIMÁRIA — AwesomeAPI.com.br (API brasileira, cotação em BRL, gratuita, sem chave)
   try{
-    // Fonte gratuita sem API key. Base BRL; convertemos para "quanto vale 1 moeda em BRL".
-    // Isso evita gastar limite do Gemini só para cotação.
+    const r=await fetch("https://economia.awesomeapi.com.br/json/last/USD-BRL,EUR-BRL,CNY-BRL",{cache:"no-store"});
+    const d=await r.json();
+    if(r.ok&&d&&d["USDBRL"]&&d["EURBRL"]&&d["CNYBRL"]){
+      const usd=parseFloat(d["USDBRL"].bid)||0;
+      const eur=parseFloat(d["EURBRL"].bid)||0;
+      const cny=parseFloat(d["CNYBRL"].bid)||0;
+      if(usd>1&&eur>1&&cny>0){
+        const now=Date.now();
+        const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+        ST.settings={...ST.settings,
+          usd:parseFloat(usd.toFixed(4)),
+          cny:parseFloat(cny.toFixed(4)),
+          eur:parseFloat(eur.toFixed(4)),
+          rateSource:"AwesomeAPI",
+          rateTime:timeStr,
+          rateTimestamp:now
+        };
+        persist();
+        ST.rateLoading=false;
+        updateNavRateSub();
+        return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"AwesomeAPI",time:timeStr,fromCache:false};
+      }
+    }
+    throw new Error("resposta inválida da AwesomeAPI");
+  }catch(e){
+    console.warn("[PriceIQ rates primary]",e.message);
+  }
+
+  // FONTE SECUNDÁRIA — ExchangeRate API (fallback gratuito)
+  try{
     const r=await fetch("https://open.er-api.com/v6/latest/BRL",{cache:"no-store"});
     const d=await r.json();
     const rates=d&&d.rates?d.rates:null;
@@ -353,26 +382,26 @@ async function fetchLiveRates(force=false){
         usd:parseFloat(usd.toFixed(4)),
         cny:parseFloat(cny.toFixed(4)),
         eur:parseFloat(eur.toFixed(4)),
-        rateSource:"ExchangeRate API",
+        rateSource:"ExchangeRate",
         rateTime:timeStr,
         rateTimestamp:now
       };
       persist();
       ST.rateLoading=false;
       updateNavRateSub();
-      return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"ExchangeRate API",time:timeStr,fromCache:false};
+      return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"ExchangeRate",time:timeStr,fromCache:false};
     }
-    throw new Error("resposta inválida da API de câmbio");
+    throw new Error("resposta inválida da ExchangeRate");
   }catch(e){
-    console.error("[PriceIQ rates]",e.message);
+    console.error("[PriceIQ rates fallback]",e.message);
   }
 
   ST.rateLoading=false;
   updateNavRateSub();
 
-  // Fallback — nunca zera. Mantém a última cotação salva/manual.
+  // Último recurso — mantém última cotação salva/manual.
   if(hasCache){
-    return{usd:s.usd,cny:s.cny,eur:s.eur,source:(s.rateSource||"cotação salva")+" (cache antigo)",time:s.rateTime,fromCache:true,stale:true};
+    return{usd:s.usd,cny:s.cny,eur:s.eur,source:(s.rateSource||"cotação salva")+" (cache)",time:s.rateTime,fromCache:true,stale:true};
   }
   return{usd:s.usd||5.10,cny:s.cny||0.70,eur:s.eur||5.55,source:"manual",time:"—",fromCache:true,stale:true};
 }
@@ -663,53 +692,64 @@ function supplierLine(s){
 async function searchAllSuppliers(product,targets,queryMeta){
   const set=ST.settings;
   const supplierList=targets.map(supplierLine).join("\n");
-  const prompt=`Você é um agente de comparação de preços. Pesquise o produto abaixo nos fornecedores listados usando Google Search.
+  const prompt=`Você é um agente especialista em comparação de preços. Pesquise o produto abaixo em TODOS os fornecedores listados usando Google Search e retorne dados 100% reais.
 
 PRODUTO: "${product}"
 
-FORNECEDORES ATIVOS:
+FORNECEDORES ATIVOS (pesquise todos):
 ${supplierList}
 
-REGRAS IMPORTANTES:
-- Faça a pesquisa de todos os fornecedores nesta única resposta.
-- Para cada fornecedor, use busca com site específico, exemplo: "${product} site:dominio".
-- Retorne somente resultados do produto correto, não acessórios, peças, capinhas, cabos ou similares, exceto se o usuário tiver pesquisado exatamente esse tipo de produto.
-- Priorize produto exato, preço real visível, link real de produto/anúncio, vendedor e avaliação real quando disponíveis.
-- Não invente preço, frete, vendedor, avaliação, reviews ou link.
-- Se não tiver preço e link confiáveis de um fornecedor, retorne found:false para esse fornecedor.
-- Frete: se for "frete grátis", use freight:0 e freightNote:"grátis confirmado". Se aparecer valor real, use o valor. Se não aparecer, use freight:0, freightNote:"não encontrado", needsManualFreightCheck:true.
-- Moedas válidas: BRL, USD, CNY, EUR.
+INSTRUÇÕES DE PESQUISA:
+1. Para cada fornecedor, use busca: "${product}" site:DOMINIO
+2. Analise os resultados e identifique o produto correto — NÃO retorne acessórios, capas, cabos, peças ou produtos genéricos similares, a menos que o usuário tenha pesquisado exatamente isso.
+3. Se encontrar MÚLTIPLOS produtos para o mesmo fornecedor, selecione o MELHOR usando este critério de custo-benefício:
+   a) Calcule um score: score = (avaliação_produto * 20) + (reviews / 100) - (preço_relativo * 15)
+   b) Priorize: produto com avaliação ≥ 4.0 + menor preço + mais reviews
+   c) Se houver produto 30% mais caro mas com avaliação muito superior (≥4.5 vs <3.5), prefira o mais barato
+   d) NUNCA retorne produto sem avaliação quando houver alternativa equivalente com avaliação
+4. Colete: preço real visível, avaliação do produto, número de avaliações, nome do vendedor se disponível, frete, link direto do produto.
+5. NÃO invente nenhum dado. Se não encontrar preço real, retorne found:false para esse fornecedor.
 
-RETORNE APENAS JSON VÁLIDO neste formato:
+SELEÇÃO DO MELHOR PRODUTO (regra de ouro):
+- Menor preço + boa avaliação (≥3.5) = ESCOLHER
+- Menor preço sem avaliação nenhuma + alternativa com avaliação = ESCOLHER a com avaliação
+- Diferença de até 20% no preço com avaliação muito melhor = ESCOLHER a melhor avaliada
+
+REGRAS DE FRETE:
+- "Frete grátis" confirmado → freight:0, freightNote:"grátis confirmado"
+- Valor real encontrado → use o valor, freightNote:"real encontrado"
+- Não encontrado → freight:0, freightNote:"não encontrado", needsManualFreightCheck:true
+
+RETORNE APENAS JSON VÁLIDO neste formato exato:
 {
   "results":[
     {
       "supplierId":"ml",
       "found":true,
-      "productName":"nome exato do produto",
+      "productName":"nome exato do produto escolhido como melhor custo-benefício",
       "sellerName":"vendedor se encontrado ou vazio",
       "sellerRating":"avaliação do vendedor se encontrada ou vazio",
       "sellerReviews":0,
-      "productRating":"avaliação do produto se encontrada ou vazio",
+      "productRating":"avaliação real do produto (ex: 4.5) ou vazio se não encontrada",
       "productReviews":0,
       "price":0.00,
       "priceMin":0.00,
       "priceMax":0.00,
       "currency":"BRL",
-      "link":"https://link-real-do-produto",
+      "link":"https://link-real-e-direto-do-produto",
       "available":true,
       "sellers":1,
       "freight":0.00,
       "freightNote":"grátis confirmado|real encontrado|não encontrado",
       "needsManualFreightCheck":false,
-      "priceType":"real",
+      "priceType":"real|a_partir_de|faixa|não_encontrado",
       "priceSourceText":"trecho curto que comprova o preço",
       "isExactProduct":true,
       "exactMatchScore":85,
       "priceConfidence":85,
       "totalConfidence":85,
       "warnings":[],
-      "note":""
+      "note":"motivo da escolha se houver múltiplos produtos disponíveis"
     }
   ]
 }`;
@@ -900,10 +940,16 @@ function renderHome(){
       </div>
       <div style="margin-bottom:18px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <span style="color:#4A5568;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px">Pesquisar em (${selCount})</span>
-          ${ST.selIds.length?`<button style="background:none;border:none;color:#4A5568;font-size:12px;font-weight:600;cursor:pointer" onclick="clearSel()">Limpar</button>`:""}
+          <span style="color:#4A5568;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px">
+            ${ST.selIds.length?`${ico.check} <span style="color:#00D4FF">${ST.selIds.length} selecionado${ST.selIds.length!==1?"s":""}</span>`:`Pesquisar em todos (${active.length})`}
+          </span>
+          <div style="display:flex;gap:8px">
+            ${ST.selIds.length<active.length?`<button style="background:none;border:none;color:#00D4FF;font-size:12px;font-weight:600;cursor:pointer" onclick="selAll()">Todos</button>`:""}
+            ${ST.selIds.length?`<button style="background:none;border:none;color:#4A5568;font-size:12px;font-weight:600;cursor:pointer" onclick="clearSel()">Limpar</button>`:""}
+          </div>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px">${chips}</div>
+        ${ST.selIds.length?`<p style="color:#4A5568;font-size:11px;margin-top:8px">${ico.info} Buscará apenas nos fornecedores selecionados acima. Sem seleção = busca em todos.</p>`:""}
       </div>
       <button class="btn btn-p" onclick="doSearch()">${ico.search} Buscar Preços Reais</button>
     </div>
@@ -939,6 +985,7 @@ function toggleChip(btn){
   renderHome();
 }
 function clearSel(){ST.selIds=[];renderHome()}
+function selAll(){ST.selIds=ST.suppliers.filter(s=>s.on).map(s=>s.id);renderHome()}
 
 // ══════════════════════════════════════════════════════
 // RESULTS
@@ -1441,7 +1488,7 @@ function renderSettings(){
 
       <!-- Cotação ao vivo -->
       <div class="card" style="border-color:rgba(0,212,255,.28)">
-        <p style="color:#00D4FF;font-size:13px;font-weight:700;text-transform:uppercase;margin-bottom:14px;letter-spacing:.5px">💱 Cotação — automática</p>
+        <p style="color:#00D4FF;font-size:13px;font-weight:700;text-transform:uppercase;margin-bottom:14px;letter-spacing:.5px">💱 Cotação ao vivo — automática (1h)</p>
         <div class="g3" style="margin-bottom:14px">
           <div style="background:#070B14;border-radius:10px;padding:10px 12px">
             <p style="color:#4A5568;font-size:10px;margin-bottom:3px">USD/BRL</p>
@@ -1462,14 +1509,14 @@ function renderSettings(){
         <button class="btn btn-p" onclick="refreshRatesSettings()">${ico.refresh} Atualizar cotação agora</button>
       </div>
 
-      <!-- Câmbio manual (fallback) -->
+      <!-- Câmbio manual -->
       <div class="card">
-        <p style="color:#8896AA;font-size:12px;font-weight:700;text-transform:uppercase;margin-bottom:6px;letter-spacing:.5px">Câmbio manual (fallback)</p>
-        <p style="color:#4A5568;font-size:11px;margin-bottom:14px">Usado apenas se a atualização automática falhar</p>
+        <p style="color:#8896AA;font-size:12px;font-weight:700;text-transform:uppercase;margin-bottom:6px;letter-spacing:.5px">✏️ Correção manual de câmbio</p>
+        <p style="color:#4A5568;font-size:11px;margin-bottom:14px">Edite os valores e clique em <strong style="color:#8896AA">Salvar</strong> para aplicar imediatamente. A cotação manual será usada por 1 hora antes da próxima atualização automática.</p>
         <div class="g3">
-          <div><label class="lbl">USD→BRL</label><input id="set-usd" type="number" step=".01" class="inp" value="${s.usd}"/></div>
-          <div><label class="lbl">EUR→BRL</label><input id="set-eur" type="number" step=".01" class="inp" value="${s.eur}"/></div>
-          <div><label class="lbl">CNY→BRL</label><input id="set-cny" type="number" step=".01" class="inp" value="${s.cny}"/></div>
+          <div><label class="lbl">USD→BRL</label><input id="set-usd" type="number" step=".0001" class="inp" value="${s.usd}"/></div>
+          <div><label class="lbl">EUR→BRL</label><input id="set-eur" type="number" step=".0001" class="inp" value="${s.eur}"/></div>
+          <div><label class="lbl">CNY→BRL</label><input id="set-cny" type="number" step=".0001" class="inp" value="${s.cny}"/></div>
         </div>
       </div>
 
@@ -1516,18 +1563,30 @@ async function refreshRatesSettings(){
 
 function saveSettings(){
   const g=id=>{const el=document.getElementById(id);return el?el.value:""};
+  const newUsd=parseFloat(g("set-usd"))||ST.settings.usd;
+  const newEur=parseFloat(g("set-eur"))||ST.settings.eur;
+  const newCny=parseFloat(g("set-cny"))||ST.settings.cny;
+  const ratesChanged=(newUsd!==ST.settings.usd||newEur!==ST.settings.eur||newCny!==ST.settings.cny);
+  const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
   ST.settings={
     ...ST.settings,
-    usd:parseFloat(g("set-usd"))||ST.settings.usd,
-    eur:parseFloat(g("set-eur"))||ST.settings.eur,
-    cny:parseFloat(g("set-cny"))||ST.settings.cny,
+    usd:newUsd,
+    eur:newEur,
+    cny:newCny,
     freight:parseFloat(g("set-frt"))||25,
     margin:parseFloat(g("set-mrg"))||30,
     apiKey:String(g("set-api")||ST.settings.apiKey||"").trim(),
     geminiModel:String(g("set-model")||ST.settings.geminiModel||"gemini-2.5-flash-lite").trim(),
+    // Quando o usuário altera taxas manualmente, marca como manual e atualiza timestamp
+    // para que fetchLiveRates() trate os valores novos como cache válido por 1h
+    ...(ratesChanged?{rateSource:"manual",rateTime:timeStr,rateTimestamp:Date.now()}:{})
   };
   LS.s("piq_gemini_key",ST.settings.apiKey);
-  persist();toast("Configurações salvas!");renderSettings();
+  persist();
+  if(ratesChanged)toast(`Taxas manuais salvas: USD ${newUsd.toFixed(2)} · EUR ${newEur.toFixed(2)} · CNY ${newCny.toFixed(4)}`);
+  else toast("Configurações salvas!");
+  updateNavRateSub();
+  renderSettings();
 }
 
 // ══════════════════════════════════════════════════════
@@ -1535,7 +1594,19 @@ function saveSettings(){
 // ══════════════════════════════════════════════════════
 renderHome();
 // Busca cotação em background ao abrir o app
-fetchLiveRates().then(()=>updateNavRateSub()).catch(()=>{});
+fetchLiveRates().then(()=>{
+  updateNavRateSub();
+  if(ST.view==="home")renderHome();
+  if(ST.view==="settings")renderSettings();
+}).catch(()=>{});
+// Auto-refresh de cotação a cada 1 hora
+setInterval(()=>{
+  fetchLiveRates(true).then(()=>{
+    updateNavRateSub();
+    if(ST.view==="home")renderHome();
+    if(ST.view==="settings")renderSettings();
+  }).catch(()=>{});
+},RATE_TTL);
 </script>
 </body>
 </html>
