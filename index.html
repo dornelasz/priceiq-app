@@ -394,15 +394,15 @@ async function fetchInvestingRate(pair){
     u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
     u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u),
   ];
-  let lastErr=null;
+  // Race em paralelo: 9 combinações simultâneas, primeiro sucesso vence (≈ 1-3s vs 90s sequencial)
+  const attempts=[];
   for(const host of hosts){
     for(const mkProxy of proxies){
-      try{
+      attempts.push((async()=>{
         const proxyUrl=mkProxy(host+"?_t="+Date.now());
-        const r=await fetch(proxyUrl,{cache:"no-store",signal:AbortSignal.timeout(10000)});
-        if(!r.ok){lastErr=new Error("HTTP "+r.status);continue;}
+        const r=await fetch(proxyUrl,{cache:"no-store",signal:AbortSignal.timeout(6000)});
+        if(!r.ok)throw new Error("HTTP "+r.status);
         const html=await r.text();
-        // Investing uses data-test="instrument-price-last" for QA automation — stable attribute
         const patterns=[
           /data-test=["']instrument-price-last["'][^>]*>\s*([\d.,]+)\s*</i,
           /"last":\s*"?([\d.]+)"?\s*[,}]/,
@@ -415,9 +415,8 @@ async function fetchInvestingRate(pair){
           let raw=m[1];
           let num;
           if(raw.includes(",")&&raw.includes(".")){
-            const lastComma=raw.lastIndexOf(",");
-            const lastDot=raw.lastIndexOf(".");
-            if(lastComma>lastDot)num=parseFloat(raw.replace(/\./g,"").replace(",","."));
+            const lc=raw.lastIndexOf(","),ld=raw.lastIndexOf(".");
+            if(lc>ld)num=parseFloat(raw.replace(/\./g,"").replace(",","."));
             else num=parseFloat(raw.replace(/,/g,""));
           } else if(raw.includes(",")){
             num=parseFloat(raw.replace(",","."));
@@ -426,13 +425,12 @@ async function fetchInvestingRate(pair){
           }
           if(num>=range[0]&&num<=range[1])return num;
         }
-        lastErr=new Error("data-test not found in "+host);
-      }catch(e){
-        lastErr=e;
-      }
+        throw new Error("preço não encontrado em "+host);
+      })());
     }
   }
-  throw lastErr||new Error("Investing.com falhou em todos os hosts/proxies");
+  try{return await Promise.any(attempts);}
+  catch{throw new Error("Investing.com falhou para "+pair);}
 }
 
 async function fetchLiveRates(force=false){
@@ -448,39 +446,44 @@ async function fetchLiveRates(force=false){
   ST.rateLoading=true;
   updateNavRateSub();
 
-  // ÚNICA FONTE — Investing.com. Se falhar, mantém última cotação e mostra erro.
-  try{
-    const [usd,eur,cny]=await Promise.all([
-      fetchInvestingRate("USD").catch(e=>{console.warn("[Investing USD]",e.message);return null;}),
-      fetchInvestingRate("EUR").catch(e=>{console.warn("[Investing EUR]",e.message);return null;}),
-      fetchInvestingRate("CNY").catch(e=>{console.warn("[Investing CNY]",e.message);return null;}),
-    ]);
-    if(usd>1&&eur>1&&cny>0){
-      const now=Date.now();
-      const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
-      ST.settings={...ST.settings,
-        usd:parseFloat(usd.toFixed(4)),
-        cny:parseFloat(cny.toFixed(4)),
-        eur:parseFloat(eur.toFixed(4)),
-        rateSource:"Investing.com",
-        rateTime:timeStr,
-        rateTimestamp:now
-      };
-      persist();
-      ST.rateLoading=false;
-      updateNavRateSub();
-      return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"Investing.com",time:timeStr,fromCache:false};
-    }
-    throw new Error("Investing.com não retornou as 3 cotações válidas (USD/EUR/CNY)");
-  }catch(e){
-    console.error("[PriceIQ Investing falhou]",e.message);
+  // ÚNICA FONTE — Investing.com. Atualização PARCIAL aceita: se 1 ou 2 das 3
+  // moedas falharem, atualiza as que vieram e mantém cache nas outras.
+  const [usd,eur,cny]=await Promise.all([
+    fetchInvestingRate("USD").catch(e=>{console.warn("[Investing USD]",e.message);return null;}),
+    fetchInvestingRate("EUR").catch(e=>{console.warn("[Investing EUR]",e.message);return null;}),
+    fetchInvestingRate("CNY").catch(e=>{console.warn("[Investing CNY]",e.message);return null;}),
+  ]);
+
+  const okUsd=usd>1, okEur=eur>1, okCny=cny>0;
+  const anyOk=okUsd||okEur||okCny;
+
+  if(anyOk){
+    const now=Date.now();
+    const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+    ST.settings={...ST.settings,
+      usd: okUsd?parseFloat(usd.toFixed(4)):(s.usd||5.10),
+      eur: okEur?parseFloat(eur.toFixed(4)):(s.eur||5.55),
+      cny: okCny?parseFloat(cny.toFixed(4)):(s.cny||0.70),
+      rateSource:"Investing.com",
+      rateTime:timeStr,
+      rateTimestamp:now
+    };
+    persist();
+    ST.rateLoading=false;
+    updateNavRateSub();
+    return{
+      usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,
+      source:"Investing.com",time:timeStr,
+      fromCache:false,
+      partial:!(okUsd&&okEur&&okCny)
+    };
   }
 
+  // Nada veio — mantém o que estava
   ST.rateLoading=false;
   updateNavRateSub();
-
   if(hasCache){
-    return{usd:s.usd,cny:s.cny,eur:s.eur,source:(s.rateSource||"Investing.com")+" (cache)",time:s.rateTime,fromCache:true,stale:true};
+    return{usd:s.usd,cny:s.cny,eur:s.eur,source:s.rateSource||"Investing.com",time:s.rateTime,fromCache:true,stale:true};
   }
   return{usd:s.usd||5.10,cny:s.cny||0.70,eur:s.eur||5.55,source:"manual",time:"—",fromCache:true,stale:true};
 }
@@ -1295,11 +1298,15 @@ function renderHome(){
 
 async function refreshRates(){
   toast("Atualizando cotações…");
-  await fetchLiveRates(true);
+  const r=await fetchLiveRates(true);
   renderHome();
-  if(ST.settings.rateSource&&!ST.settings.rateSource.includes("cache")&&ST.settings.rateTimestamp>Date.now()-5000)
-    toast(`Cotação Investing atualizada: USD ${fmt4(ST.settings.usd)}`);
-  else toast("Investing.com indisponível — tente novamente em 1 minuto","err");
+  if(!r.fromCache&&!r.partial)
+    toast(`Cotação atualizada: USD ${fmt4(ST.settings.usd)} · EUR ${fmt4(ST.settings.eur)} · CNY ${fmt4(ST.settings.cny)}`);
+  else if(!r.fromCache&&r.partial)
+    toast(`Atualização parcial: USD ${fmt4(ST.settings.usd)} (algumas moedas mantiveram valor anterior)`);
+  else if(ST.settings.usd>0)
+    toast(`Mantendo última cotação: USD ${fmt4(ST.settings.usd)} (próxima tentativa em 1min)`);
+  else toast("Sem cotação disponível — tente novamente em 1 minuto","err");
 }
 
 function recallQuery(idx){
@@ -1902,11 +1909,15 @@ function renderSettings(){
 
 async function refreshRatesSettings(){
   toast("Atualizando cotações…");
-  await fetchLiveRates(true);
+  const r=await fetchLiveRates(true);
   renderSettings();
-  if(ST.settings.rateSource&&!ST.settings.rateSource.includes("cache")&&ST.settings.rateTimestamp>Date.now()-5000)
-    toast(`Cotação Investing atualizada: USD ${fmt4(ST.settings.usd)}`);
-  else toast("Investing.com indisponível — tente novamente em 1 minuto","err");
+  if(!r.fromCache&&!r.partial)
+    toast(`Cotação atualizada: USD ${fmt4(ST.settings.usd)} · EUR ${fmt4(ST.settings.eur)} · CNY ${fmt4(ST.settings.cny)}`);
+  else if(!r.fromCache&&r.partial)
+    toast(`Atualização parcial: USD ${fmt4(ST.settings.usd)}`);
+  else if(ST.settings.usd>0)
+    toast(`Mantendo última cotação: USD ${fmt4(ST.settings.usd)}`);
+  else toast("Sem cotação disponível","err");
 }
 
 function saveSettings(){
