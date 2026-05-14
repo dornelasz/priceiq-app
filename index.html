@@ -373,17 +373,87 @@ function parseJson(raw){
 // ══════════════════════════════════════════════════════
 const RATE_TTL=60000; // 1 minuto em ms
 
-// Busca taxa real de mercado via Yahoo Finance (mesma fonte de dados que a Investing.com)
-// Retorna JSON estruturado — sem regex frágil. Updates a cada 1 minuto.
+// Faixas plausíveis por moeda — sanity check para descartar números errados
+// extraídos da página (variação, gráfico, % etc.). Só aceita valores nesse range.
+const RATE_RANGES={
+  USD:[3.0,10.0],
+  EUR:[4.0,12.0],
+  CNY:[0.3,2.0],
+};
+
+// FONTE PRIMÁRIA — Investing.com via Jina Reader, com extração precisa.
+// O padrão "preço + variação assinada + percentual entre parênteses" só aparece
+// UMA VEZ na página, no bloco da cotação principal. Sanity-check por faixa.
+async function fetchInvestingRate(pair){
+  const slug=pair.toLowerCase()+"-brl";
+  // Múltiplas URLs equivalentes — Jina pode falhar em uma e funcionar em outra
+  const urls=[
+    "https://br.investing.com/currencies/"+slug,
+    "https://m.investing.com/currencies/"+slug,
+    "https://www.investing.com/currencies/"+slug,
+  ];
+  const range=RATE_RANGES[pair.toUpperCase()]||[0.01,100];
+  let lastErr=null;
+
+  for(const url of urls){
+    try{
+      // Cache-buster — evita resposta cached do Jina
+      const r=await fetch("https://r.jina.ai/"+url+"?_t="+Date.now(),{
+        headers:{"Accept":"text/plain","X-Return-Format":"text"},
+        signal:AbortSignal.timeout(12000),
+        cache:"no-store"
+      });
+      if(!r.ok){lastErr=new Error("Jina HTTP "+r.status);continue;}
+      const txt=await r.text();
+
+      // PADRÃO PRINCIPAL: "X,XXXX +Y,YYYY (+Z,ZZ%)" — formato único da cotação principal
+      // Aceita vírgula ou ponto, sinais +/-/−, e quebras de linha entre os campos.
+      const re=/(\d{1,3}[,.]\d{2,4})[\s\n\r]*[+\-−][\s]*\d+[,.]\d+[\s\n\r]*\([+\-−][\s]*\d+[,.]\d+\s*%\)/g;
+      const matches=[...txt.matchAll(re)];
+      for(const m of matches){
+        const num=parseFloat(m[1].replace(",","."));
+        if(num>=range[0]&&num<=range[1])return num;
+      }
+
+      // PADRÃO 2: às vezes o "%" vem sem parênteses (formato mobile)
+      const re2=/(\d{1,3}[,.]\d{2,4})[\s\n\r]*[+\-−][\s]*\d+[,.]\d+[\s\n\r]*[+\-−][\s]*\d+[,.]\d+\s*%/g;
+      const matches2=[...txt.matchAll(re2)];
+      for(const m of matches2){
+        const num=parseFloat(m[1].replace(",","."));
+        if(num>=range[0]&&num<=range[1])return num;
+      }
+
+      // ÚLTIMO FALLBACK: procurar perto do nome do par "USD/BRL" e pegar
+      // o primeiro número 4 decimais que cai no range esperado
+      const pairUp=pair.toUpperCase()+"/BRL";
+      const idx=txt.indexOf(pairUp);
+      if(idx>=0){
+        const after=txt.slice(idx,idx+2000);
+        const allNums=after.match(/\d{1,3}[,.]\d{4}/g)||[];
+        for(const n of allNums){
+          const num=parseFloat(n.replace(",","."));
+          if(num>=range[0]&&num<=range[1])return num;
+        }
+      }
+      lastErr=new Error("preço não localizado em "+url);
+    }catch(e){
+      lastErr=e;
+      console.warn("[Investing falhou]",url,e.message);
+    }
+  }
+  throw lastErr||new Error("Investing.com: preço não encontrado");
+}
+
+// FONTE SECUNDÁRIA — Yahoo Finance (mesma fonte spot, JSON real-time, via proxy CORS)
 async function fetchYahooRate(pair){
   const symbol=pair.toUpperCase()+"BRL=X";
-  const yahooBase=`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d`;
-  // Yahoo Finance não envia CORS — usar proxies gratuitos
+  const yahooBase=`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d&_=${Date.now()}`;
   const endpoints=[
     "https://corsproxy.io/?"+encodeURIComponent(yahooBase),
     "https://api.allorigins.win/raw?url="+encodeURIComponent(yahooBase),
     "https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(yahooBase),
   ];
+  const range=RATE_RANGES[pair.toUpperCase()]||[0.01,100];
   for(const url of endpoints){
     try{
       const r=await fetch(url,{cache:"no-store",signal:AbortSignal.timeout(8000)});
@@ -391,7 +461,7 @@ async function fetchYahooRate(pair){
       const d=await r.json();
       const meta=d&&d.chart&&d.chart.result&&d.chart.result[0]&&d.chart.result[0].meta;
       const price=meta&&meta.regularMarketPrice;
-      if(typeof price==="number"&&price>0.01&&price<100)return price;
+      if(typeof price==="number"&&price>=range[0]&&price<=range[1])return price;
     }catch(e){
       console.warn("[Yahoo proxy falhou]",url.slice(0,40),e.message);
     }
@@ -413,7 +483,35 @@ async function fetchLiveRates(force=false){
   ST.rateLoading=true;
   updateNavRateSub();
 
-  // FONTE PRIMÁRIA — Yahoo Finance (= mesma fonte spot da Investing.com, JSON real-time, 4 decimais)
+  // FONTE PRIMÁRIA — Investing.com via Jina (extração precisa do bloco da cotação)
+  try{
+    const [usd,eur,cny]=await Promise.all([
+      fetchInvestingRate("USD").catch(e=>{console.warn("[Investing USD]",e.message);return null;}),
+      fetchInvestingRate("EUR").catch(e=>{console.warn("[Investing EUR]",e.message);return null;}),
+      fetchInvestingRate("CNY").catch(e=>{console.warn("[Investing CNY]",e.message);return null;}),
+    ]);
+    if(usd>1&&eur>1&&cny>0){
+      const now=Date.now();
+      const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+      ST.settings={...ST.settings,
+        usd:parseFloat(usd.toFixed(4)),
+        cny:parseFloat(cny.toFixed(4)),
+        eur:parseFloat(eur.toFixed(4)),
+        rateSource:"Investing.com",
+        rateTime:timeStr,
+        rateTimestamp:now
+      };
+      persist();
+      ST.rateLoading=false;
+      updateNavRateSub();
+      return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"Investing.com",time:timeStr,fromCache:false};
+    }
+    throw new Error("Investing não retornou as 3 cotações válidas");
+  }catch(e){
+    console.warn("[PriceIQ rates Investing]",e.message);
+  }
+
+  // FONTE SECUNDÁRIA — Yahoo Finance (mesma fonte spot, JSON via proxy CORS)
   try{
     const [usd,eur,cny]=await Promise.all([
       fetchYahooRate("USD").catch(()=>null),
