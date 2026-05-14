@@ -173,6 +173,50 @@ function persist(){
 }
 
 // ══════════════════════════════════════════════════════
+// MIGRAÇÃO — garante que todos os fornecedores tenham url/site válidos
+// (versões antigas podem ter salvo sem o campo url no localStorage)
+// ══════════════════════════════════════════════════════
+function migrateSuppliers(){
+  const KNOWN_URLS={
+    "mercadolivre.com.br":"https://lista.mercadolivre.com.br/{q}",
+    "amazon.com.br":"https://www.amazon.com.br/s?k={q}",
+    "amazon.com":"https://www.amazon.com/s?k={q}",
+    "shopee.com.br":"https://shopee.com.br/search?keyword={q}",
+    "magazineluiza.com.br":"https://www.magazineluiza.com.br/busca/{q}/",
+    "aliexpress.com":"https://www.aliexpress.com/wholesale?SearchText={q}",
+    "alibaba.com":"https://www.alibaba.com/trade/search?SearchText={q}",
+    "americanas.com.br":"https://www.americanas.com.br/busca/{q}",
+    "submarino.com.br":"https://www.submarino.com.br/busca/{q}",
+    "casasbahia.com.br":"https://www.casasbahia.com.br/busca/{q}",
+  };
+  let changed=false;
+  ST.suppliers=(ST.suppliers||[]).filter(s=>s&&typeof s==="object").map(s=>{
+    const out={...s};
+    if(!out.id)out.id="sup"+Date.now()+Math.random().toString(36).slice(2,6);
+    if(!out.name)out.name=out.site||"Fornecedor";
+    if(!out.cur)out.cur="BRL";
+    if(!out.country)out.country="Brasil";
+    if(!out.type)out.type="Nacional";
+    if(typeof out.on!=="boolean")out.on=true;
+    // Campo crítico: site
+    if(!out.site&&out.url){
+      const m=String(out.url).match(/https?:\/\/([^\/]+)/);
+      if(m)out.site=m[1].replace(/^www\./,"");
+    }
+    if(!out.site)out.site="";
+    // Campo crítico: url
+    if(!out.url||typeof out.url!=="string"||!out.url.includes("{q}")){
+      const siteKey=String(out.site||"").replace(/^www\./,"").toLowerCase();
+      out.url=KNOWN_URLS[siteKey]||(out.site?`https://${out.site}/search?q={q}`:"");
+      changed=true;
+    }
+    return out;
+  }).filter(s=>s.site||s.url);
+  if(changed)persist();
+}
+migrateSuppliers();
+
+// ══════════════════════════════════════════════════════
 // HELPERS
 // ══════════════════════════════════════════════════════
 function esc(s){
@@ -181,7 +225,12 @@ function esc(s){
     .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
 }
 function fmt(n){return typeof n==="number"?n.toFixed(2):String(n||"0.00")}
+function fmt4(n){return typeof n==="number"?n.toFixed(4):String(n||"0.0000")}
 function fmtDate(iso){try{return new Date(iso).toLocaleString("pt-BR")}catch{return iso||""}}
+function isQuotaError(e){
+  const msg=String(e?.message||e||"").toLowerCase();
+  return msg.includes("quota")||msg.includes("429")||msg.includes("resource_exhausted")||msg.includes("rate limit")||msg.includes("limite")||msg.includes("exceeded");
+}
 
 // ══════════════════════════════════════════════════════
 // TOAST
@@ -299,7 +348,8 @@ async function testGeminiAPI(){
     toast("Gemini respondeu, mas não retornou JSON esperado.","err");
     return false;
   }catch(e){
-    toast("Erro Gemini: "+(e.message||e),"err");
+    if(isQuotaError(e))toast("Quota Gemini esgotada. Aguarde até meia-noite UTC ou troque de modelo.","err");
+    else toast("Erro Gemini: "+(e.message||e),"err");
     return false;
   }
 }
@@ -319,16 +369,75 @@ function parseJson(raw){
 }
 
 // ══════════════════════════════════════════════════════
-// TAREFA 1 — COTAÇÃO REAL DE MOEDAS (Investing.com, cache 1h)
+// TAREFA 1 — COTAÇÃO REAL DE MOEDAS (Yahoo Finance, atualiza a cada 1min)
 // ══════════════════════════════════════════════════════
-const RATE_TTL=3600000; // 1 hora em ms
+const RATE_TTL=60000; // 1 minuto em ms
+
+// Faixas plausíveis por moeda — sanity check para descartar números errados
+// extraídos da página (variação, gráfico, % etc.). Só aceita valores nesse range.
+const RATE_RANGES={
+  USD:[3.0,10.0],
+  EUR:[4.0,12.0],
+  CNY:[0.3,2.0],
+};
+
+async function fetchInvestingRate(pair){
+  const slug=pair.toLowerCase()+"-brl";
+  const range=RATE_RANGES[pair.toUpperCase()]||[0.01,100];
+  const hosts=[
+    "https://www.investing.com/currencies/"+slug,
+    "https://br.investing.com/currencies/"+slug,
+    "https://m.investing.com/currencies/"+slug,
+  ];
+  const proxies=[
+    u=>"https://corsproxy.io/?"+encodeURIComponent(u),
+    u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
+    u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u),
+  ];
+  // Race em paralelo: 9 combinações simultâneas, primeiro sucesso vence (≈ 1-3s vs 90s sequencial)
+  const attempts=[];
+  for(const host of hosts){
+    for(const mkProxy of proxies){
+      attempts.push((async()=>{
+        const proxyUrl=mkProxy(host+"?_t="+Date.now());
+        const r=await fetch(proxyUrl,{cache:"no-store",signal:AbortSignal.timeout(6000)});
+        if(!r.ok)throw new Error("HTTP "+r.status);
+        const html=await r.text();
+        const patterns=[
+          /data-test=["']instrument-price-last["'][^>]*>\s*([\d.,]+)\s*</i,
+          /"last":\s*"?([\d.]+)"?\s*[,}]/,
+          /"regularMarketPrice":\s*([\d.]+)/,
+          /"last_close":\s*"?([\d.]+)"?/,
+        ];
+        for(const p of patterns){
+          const m=html.match(p);
+          if(!m)continue;
+          let raw=m[1];
+          let num;
+          if(raw.includes(",")&&raw.includes(".")){
+            const lc=raw.lastIndexOf(","),ld=raw.lastIndexOf(".");
+            if(lc>ld)num=parseFloat(raw.replace(/\./g,"").replace(",","."));
+            else num=parseFloat(raw.replace(/,/g,""));
+          } else if(raw.includes(",")){
+            num=parseFloat(raw.replace(",","."));
+          } else {
+            num=parseFloat(raw);
+          }
+          if(num>=range[0]&&num<=range[1])return num;
+        }
+        throw new Error("preço não encontrado em "+host);
+      })());
+    }
+  }
+  try{return await Promise.any(attempts);}
+  catch{throw new Error("Investing.com falhou para "+pair);}
+}
 
 async function fetchLiveRates(force=false){
   const s=ST.settings;
   const age=Date.now()-(s.rateTimestamp||0);
   const hasCache=s.usd>0&&s.cny>0&&s.eur>0&&s.rateTimestamp>0;
 
-  // Atualiza somente de hora em hora, a não ser que o usuário force.
   if(!force&&hasCache&&age<RATE_TTL){
     updateNavRateSub();
     return {usd:s.usd,eur:s.eur,cny:s.cny,source:s.rateSource,time:s.rateTime,fromCache:true};
@@ -337,42 +446,44 @@ async function fetchLiveRates(force=false){
   ST.rateLoading=true;
   updateNavRateSub();
 
-  try{
-    // Fonte gratuita sem API key. Base BRL; convertemos para "quanto vale 1 moeda em BRL".
-    // Isso evita gastar limite do Gemini só para cotação.
-    const r=await fetch("https://open.er-api.com/v6/latest/BRL",{cache:"no-store"});
-    const d=await r.json();
-    const rates=d&&d.rates?d.rates:null;
-    if(r.ok&&rates&&rates.USD>0&&rates.CNY>0&&rates.EUR>0){
-      const now=Date.now();
-      const usd=1/Number(rates.USD);
-      const cny=1/Number(rates.CNY);
-      const eur=1/Number(rates.EUR);
-      const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
-      ST.settings={...ST.settings,
-        usd:parseFloat(usd.toFixed(4)),
-        cny:parseFloat(cny.toFixed(4)),
-        eur:parseFloat(eur.toFixed(4)),
-        rateSource:"ExchangeRate API",
-        rateTime:timeStr,
-        rateTimestamp:now
-      };
-      persist();
-      ST.rateLoading=false;
-      updateNavRateSub();
-      return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"ExchangeRate API",time:timeStr,fromCache:false};
-    }
-    throw new Error("resposta inválida da API de câmbio");
-  }catch(e){
-    console.error("[PriceIQ rates]",e.message);
+  // ÚNICA FONTE — Investing.com. Atualização PARCIAL aceita: se 1 ou 2 das 3
+  // moedas falharem, atualiza as que vieram e mantém cache nas outras.
+  const [usd,eur,cny]=await Promise.all([
+    fetchInvestingRate("USD").catch(e=>{console.warn("[Investing USD]",e.message);return null;}),
+    fetchInvestingRate("EUR").catch(e=>{console.warn("[Investing EUR]",e.message);return null;}),
+    fetchInvestingRate("CNY").catch(e=>{console.warn("[Investing CNY]",e.message);return null;}),
+  ]);
+
+  const okUsd=usd>1, okEur=eur>1, okCny=cny>0;
+  const anyOk=okUsd||okEur||okCny;
+
+  if(anyOk){
+    const now=Date.now();
+    const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+    ST.settings={...ST.settings,
+      usd: okUsd?parseFloat(usd.toFixed(4)):(s.usd||5.10),
+      eur: okEur?parseFloat(eur.toFixed(4)):(s.eur||5.55),
+      cny: okCny?parseFloat(cny.toFixed(4)):(s.cny||0.70),
+      rateSource:"Investing.com",
+      rateTime:timeStr,
+      rateTimestamp:now
+    };
+    persist();
+    ST.rateLoading=false;
+    updateNavRateSub();
+    return{
+      usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,
+      source:"Investing.com",time:timeStr,
+      fromCache:false,
+      partial:!(okUsd&&okEur&&okCny)
+    };
   }
 
+  // Nada veio — mantém o que estava
   ST.rateLoading=false;
   updateNavRateSub();
-
-  // Fallback — nunca zera. Mantém a última cotação salva/manual.
   if(hasCache){
-    return{usd:s.usd,cny:s.cny,eur:s.eur,source:(s.rateSource||"cotação salva")+" (cache antigo)",time:s.rateTime,fromCache:true,stale:true};
+    return{usd:s.usd,cny:s.cny,eur:s.eur,source:s.rateSource||"Investing.com",time:s.rateTime,fromCache:true,stale:true};
   }
   return{usd:s.usd||5.10,cny:s.cny||0.70,eur:s.eur||5.55,source:"manual",time:"—",fromCache:true,stale:true};
 }
@@ -383,7 +494,7 @@ function updateNavRateSub(){
   const s=ST.settings;
   if(ST.rateLoading){el.textContent="Atualizando cotações…";return;}
   if(s.rateTime&&s.usd>0){
-    el.textContent=`USD ${fmt(s.usd)} · ${s.rateTime}`;
+    el.textContent=`USD ${fmt4(s.usd)} · ${s.rateTime}`;
   } else {
     el.textContent="Comparador com IA";
   }
@@ -439,47 +550,271 @@ function interpretQuery(rawQuery){
 }
 
 // ══════════════════════════════════════════════════════
-// TAREFA 11 — VALIDAÇÃO JS PÓS-RETORNO
+// VALIDAÇÃO — apenas rejeições críticas
 // ══════════════════════════════════════════════════════
-function validateResult(p,queryMeta,sup){
-  const reasons=[];
-
-  // 1. Campos obrigatórios
-  if(!p.found||!p.productName||!(p.price>0))return{ok:false,reasons:["dados básicos ausentes"]};
-
-  // 2. Link real — deve conter domínio do fornecedor
-  const linkOk=p.link&&p.link.includes("http")&&(p.link.includes(sup.site)||p.link.includes(sup.site.replace("www.","")));
-  if(!linkOk){reasons.push("link não pertence ao fornecedor")}
-
-  // 3. Scores mínimos
-  const exact=parseInt(p.exactMatchScore)||0;
-  const priceConf=parseInt(p.priceConfidence)||0;
-  const total=parseInt(p.totalConfidence)||0;
-  if(exact<60)reasons.push(`exactMatchScore baixo (${exact})`);
-  if(priceConf<60)reasons.push(`priceConfidence baixo (${priceConf})`);
-  if(total<60)reasons.push(`totalConfidence baixo (${total})`);
-
-  // 4. Exclusão inteligente — só rejeita acessórios se o usuário não buscou acessório
-  if(!queryMeta.isSearchingAccessory){
-    const nameLower=(p.productName||"").toLowerCase();
-    const rejected=queryMeta.exclusionTerms.find(term=>nameLower.includes(term));
-    if(rejected)reasons.push(`produto é acessório indesejado: "${rejected}"`);
-  }
-
-  // 5. Preço absurdo (sanity check por categoria)
-  if(p.price>5000000)reasons.push("preço absurdo");
-  if(p.price<0.01)reasons.push("preço zerado ou negativo");
-
-  // 6. priceType inválido
-  if(p.priceType==="não_encontrado")reasons.push("preço não encontrado");
-
-  const ok=reasons.length===0;
-  return{ok,reasons};
+function isUnwantedAccessory(name,queryMeta){
+  if(queryMeta.isSearchingAccessory)return false;
+  const n=(name||"").toLowerCase();
+  return queryMeta.exclusionTerms.some(t=>n.includes(t));
 }
 
 // ══════════════════════════════════════════════════════
-// TAREFA 2+4+5+6+7+8+9+10 — BUSCA REAL COM PROMPT COMPLETO
+// BUSCA — Jina Reader + Gemini (sem grounding obrigatório)
 // ══════════════════════════════════════════════════════
+
+// Busca conteúdo real de uma URL via Jina Reader (gratuito, sem chave)
+async function fetchPageViaJina(url){
+  const endpoint="https://r.jina.ai/"+url;
+  const r=await fetch(endpoint,{
+    headers:{"Accept":"text/plain","X-Return-Format":"text","X-Timeout":"15"},
+    signal:AbortSignal.timeout(20000)
+  });
+  if(!r.ok)throw new Error("Jina HTTP "+r.status);
+  const txt=await r.text();
+  // Retorna os primeiros 8000 chars — suficiente para ver lista de resultados
+  return txt.slice(0,8000);
+}
+
+// Detecta se uma URL aponta para uma página de produto específico (não busca/categoria)
+function isProductUrl(url){
+  if(!url||!url.startsWith("http"))return false;
+  return(
+    /\/MLB\d{5,}/.test(url)||           // Mercado Livre
+    /\/dp\/[A-Z0-9]{8,}/.test(url)||    // Amazon BR/USA
+    /-i\.\d{5,}\.\d{5,}/.test(url)||    // Shopee
+    /\/p\/[a-z0-9]{8,}[\/.]/.test(url)|| // Magalu
+    /\/item\/\d{8,}/.test(url)||         // AliExpress
+    /\/product[-_]detail\//i.test(url)   // Alibaba
+  );
+}
+
+// Converte resposta bruta do Gemini em objeto de resultado padronizado
+function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
+  if(!p||!p.found)return{found:false};
+  const price=parseFloat(p.price)||0;
+  if(price<=0||price>5000000)return{found:false,reason:"preço inválido"};
+  if(!p.productName)return{found:false,reason:"nome ausente"};
+  if(isUnwantedAccessory(p.productName,queryMeta))return{found:false,reason:"acessório indesejado"};
+
+  // Campos seguros do fornecedor
+  const safeSup=sup||{};
+  const supSite=String(safeSup.site||"").trim();
+  const supName=String(safeSup.name||supSite||"Fornecedor").trim();
+  const supCur=String(safeSup.cur||"BRL").trim().toUpperCase();
+  const supId=String(safeSup.id||"sup"+Date.now()).trim();
+
+  // Link: usa o retornado se contiver o domínio do fornecedor; senão usa URL de busca
+  let link=String(p.link||"");
+  const siteNoWww=supSite.replace(/^www\./,"");
+  const linkValid=link.startsWith("http")&&supSite&&(link.includes(supSite)||link.includes(siteNoWww));
+  if(!linkValid)link=fallbackSearchUrl||link||"";
+  const linkType=isProductUrl(link)?"product":"search";
+
+  const freight=parseFloat(p.freight)||0;
+  const priceMin=parseFloat(p.priceMin)||price;
+  const priceMax=parseFloat(p.priceMax)||price;
+  const total=price+freight;
+  const cur=String(p.currency||supCur).toUpperCase();
+  const rateUsed=cur==="USD"?set.usd:cur==="EUR"?set.eur:cur==="CNY"?set.cny:1;
+  const brl=parseFloat((total*rateUsed).toFixed(2));
+  const priceBRL=parseFloat((price*rateUsed).toFixed(2));
+  const freightBRL=parseFloat((freight*rateUsed).toFixed(2));
+  const minBrl=parseFloat((priceMin*rateUsed).toFixed(2));
+  const maxBrl=parseFloat((priceMax*rateUsed).toFixed(2));
+  const ratePair=cur==="BRL"?"BRL":cur+"/BRL";
+
+  return{
+    found:true,
+    id:"r"+Date.now()+Math.random().toString(36).slice(2,6),
+    productName:String(p.productName||product).slice(0,150),
+    supplier:supName,supId:supId,
+    sellerName:String(p.sellerName||""),
+    sellerRating:String(p.sellerRating||""),
+    sellerReviews:parseInt(p.sellerReviews)||0,
+    productRating:String(p.productRating||p.rating||""),
+    productReviews:parseInt(p.productReviews||p.reviews)||0,
+    price,priceMin,priceMax,
+    currency:cur,originalCurrency:cur,
+    exchangePair:ratePair,exchangeRateUsed:rateUsed,
+    priceBRL,
+    rateSource:set.rateSource||"manual",rateTime:set.rateTime||"",rateTimestamp:set.rateTimestamp||0,
+    freight,total,brl,freightBRL,
+    priceMinBrl:minBrl,priceMaxBrl:maxBrl,
+    freeShip:["grátis confirmado","grátis","free"].includes(String(p.freightNote||"").toLowerCase()),
+    freightNote:String(p.freightNote||"não encontrado"),
+    freightSourceText:String(p.freightSourceText||""),
+    needsManualFreightCheck:!p.freightNote||p.freightNote==="não encontrado",
+    link,linkType,
+    available:p.available!==false,
+    sellers:parseInt(p.sellers)||1,
+    priceType:String(p.priceType||"real"),
+    priceSourceText:String(p.priceSourceText||""),
+    exactMatchScore:parseInt(p.exactMatchScore)||75,
+    priceConfidence:parseInt(p.priceConfidence)||75,
+    totalConfidence:parseInt(p.totalConfidence)||75,
+    warnings:Array.isArray(p.warnings)?p.warnings:[],
+    note:String(p.note||""),
+    ts:new Date().toISOString()
+  };
+}
+
+// Busca um fornecedor em 2 fases, ambas usando Jina Reader (sem grounding para evitar invenção)
+async function searchOneSupplier(product,sup,queryMeta){
+  const set=ST.settings;
+  if(!sup||typeof sup!=="object")return{found:false,error:"fornecedor inválido"};
+  const supSite=String(sup.site||"").trim();
+  const supUrl=String(sup.url||"").trim();
+  const supName=String(sup.name||supSite||"Fornecedor").trim();
+  const supCur=String(sup.cur||"BRL").trim().toUpperCase();
+  if(!supSite&&!supUrl)return{found:false,error:"fornecedor sem site nem URL configurados"};
+
+  let searchUrl;
+  if(supUrl&&supUrl.includes("{q}")){
+    searchUrl=supUrl.replace("{q}",encodeURIComponent(product));
+  }else if(supSite){
+    searchUrl=`https://${supSite.replace(/^https?:\/\//,"").replace(/\/$/,"")}/search?q=${encodeURIComponent(product)}`;
+  }else{
+    return{found:false,error:"não foi possível construir URL de busca"};
+  }
+
+  const jsonTpl=`{"found":true,"productName":"nome real","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${supCur}","link":"url","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"trecho do preço","exactMatchScore":80,"priceConfidence":80,"totalConfidence":80,"warnings":[],"note":""}`;
+
+  const errors=[];
+  const siteNoWww=supSite.replace(/^www\./,"").toLowerCase();
+  // Extrai do conteúdo Jina o PRIMEIRO link de produto direto (não busca/categoria)
+  const findDirectUrl=(content)=>{
+    if(!content)return null;
+    // 1) Padrões de URL de produto por marketplace
+    const patterns=[
+      /https?:\/\/[^\s)"'<>]*mercadolivre\.com\.br\/[^\s)"'<>]*(?:MLB-?\d{6,}|\/p\/MLB\d{6,})[^\s)"'<>]*/i,
+      /https?:\/\/[^\s)"'<>]*amazon\.com(?:\.br)?\/(?:[^\s)"'<>]*\/)?dp\/[A-Z0-9]{10}[^\s)"'<>]*/i,
+      /https?:\/\/[^\s)"'<>]*shopee\.com\.br\/[^\s)"'<>]*-i\.\d{4,}\.\d{4,}[^\s)"'<>]*/i,
+      /https?:\/\/[^\s)"'<>]*magazineluiza\.com\.br\/[^\s)"'<>]*\/p\/[a-z0-9]{6,}[^\s)"'<>]*/i,
+      /https?:\/\/[^\s)"'<>]*aliexpress\.com\/item\/\d{8,}[^\s)"'<>]*/i,
+      /https?:\/\/[^\s)"'<>]*alibaba\.com\/product-detail\/[^\s)"'<>]+/i,
+    ];
+    for(const p of patterns){
+      const m=content.match(p);
+      if(m)return m[0].replace(/[).,;:!?]+$/,"");
+    }
+    return null;
+  };
+  // Para fornecedores personalizados: extrai primeiro link interno do domínio que NÃO seja a página de busca
+  const findCustomUrl=(content,siteHost,searchPath)=>{
+    if(!content||!siteHost)return null;
+    const escSite=siteHost.replace(/\./g,"\\.");
+    const rx=new RegExp(`https?://(?:www\\.)?${escSite}/[^\\s)"'<>]{4,}`,"gi");
+    const matches=content.match(rx)||[];
+    for(const u of matches){
+      const clean=u.replace(/[).,;:!?]+$/,"");
+      // pula URLs que são a própria página de busca
+      if(searchPath&&clean.includes(searchPath))continue;
+      if(/\/(search|busca|s\?|find|q=)/i.test(clean))continue;
+      return clean;
+    }
+    return null;
+  };
+
+  // ── FASE 1: Jina Reader na página de busca do site ──
+  let pageContent="";
+  try{
+    pageContent=await fetchPageViaJina(searchUrl);
+  }catch(e){
+    errors.push("Jina(busca): "+e.message);
+    console.warn("[PriceIQ] Jina:searchPage falhou",supName,e.message);
+  }
+
+  if(pageContent&&pageContent.length>300){
+    const prompt=`Extrator de e-commerce. Analise a página de busca real do ${supName} (${supSite}) e retorne o melhor produto "${product}".
+
+CONTEÚDO DA PÁGINA:
+---
+${pageContent.slice(0,7000)}
+---
+
+REGRAS:
+1. NÃO retorne acessórios/capas/cabos/películas a menos que o usuário pediu.
+2. Se múltiplos: escolha menor preço + melhor avaliação.
+3. Extraia SOMENTE dados visíveis no texto. NÃO invente nada.
+4. Para "link" — PROCURE COM ATENÇÃO uma URL de produto específico no conteúdo:
+   • Padrões comuns: /MLB (Mercado Livre), /dp/ (Amazon), -i. (Shopee), /p/ (Magalu/genérico), /item/ (AliExpress), /product-detail/ (Alibaba), /produto/, /products/, /pd/, /pdp/
+   • Aceite QUALQUER URL completa começando com http(s):// que contenha "${siteNoWww}" e que NÃO seja a página de busca/categoria
+   • Em sites personalizados, links de produto geralmente têm um ID/slug único após o domínio (ex: /produto/cooler-asus-rog-12345)
+   • Se realmente não encontrar URL de produto específico, use: "${searchUrl}"
+5. Se não encontrar "${product}" com preço real: {"found":false,"reason":"..."}
+
+RETORNE APENAS este JSON:
+${jsonTpl}`;
+
+    try{
+      const raw=await callGemini(prompt,1000,false);
+      const p=parseJson(raw);
+      // Pós-processamento: se o Gemini não conseguiu pegar link direto, escaneia o conteúdo Jina
+      if(p&&p.found!==false&&!isProductUrl(String(p.link||""))){
+        const direct=findDirectUrl(pageContent)||findCustomUrl(pageContent,siteNoWww,"/search");
+        if(direct&&(direct.includes(siteNoWww)||direct.includes(supSite)))p.link=direct;
+      }
+      const r=buildResult(p,product,sup,set,queryMeta,searchUrl);
+      if(r.found)return r;
+    }catch(e){
+      errors.push("Gemini(busca): "+e.message);
+      console.warn("[PriceIQ] Gemini:parse:searchPage falhou",supName,e.message);
+      if(isQuotaError(e))return{found:false,error:"Quota Gemini esgotada — "+e.message,quotaExceeded:true};
+    }
+  }
+
+  // ── FASE 2: Jina no Google Search (busca produto no site específico) ──
+  // Sem grounding — Google via Jina retorna dados reais indexados, sem invenção
+  const gQuery=encodeURIComponent(product+" site:"+supSite);
+  const googleUrl=`https://www.google.com/search?q=${gQuery}&hl=pt-BR&num=5`;
+  let googleContent="";
+  try{
+    googleContent=await fetchPageViaJina(googleUrl);
+  }catch(e){
+    errors.push("Jina(Google): "+e.message);
+    console.warn("[PriceIQ] Jina:google falhou",supName,e.message);
+  }
+
+  if(googleContent&&googleContent.length>200){
+    const prompt=`Analise os resultados do Google para "${product}" no site ${supSite}.
+
+RESULTADOS DO GOOGLE:
+---
+${googleContent.slice(0,6000)}
+---
+
+TAREFA:
+1. Encontre "${product}" nos snippets do Google que sejam de ${supSite}.
+2. Extraia o link direto ao produto (deve conter ${supSite} e ter padrão de ID como /MLB, /dp/, /item/).
+   Se não encontrar URL de produto direto, use: "${searchUrl}"
+3. Extraia preço SOMENTE se visível no snippet. Se não aparecer preço: {"found":false,"reason":"preço não visível no Google"}
+4. NÃO invente nenhum dado.
+
+RETORNE APENAS este JSON:
+${jsonTpl}`;
+
+    try{
+      const raw=await callGemini(prompt,1000,false);
+      const p=parseJson(raw);
+      // Pós-processamento: se o Gemini não pegou link direto, escaneia snippets do Google
+      if(p&&p.found!==false&&!isProductUrl(String(p.link||""))){
+        const direct=findDirectUrl(googleContent)||findCustomUrl(googleContent,siteNoWww,"google.com");
+        if(direct&&(direct.includes(siteNoWww)||direct.includes(supSite)))p.link=direct;
+      }
+      const r=buildResult(p,product,sup,set,queryMeta,searchUrl);
+      if(r.found)return r;
+    }catch(e){
+      errors.push("Gemini(Google): "+e.message);
+      console.warn("[PriceIQ] Gemini:parse:google falhou",supName,e.message);
+      if(isQuotaError(e))return{found:false,error:"Quota Gemini esgotada — "+e.message,quotaExceeded:true};
+    }
+  }
+
+  const errSummary=errors.length?errors.slice(0,2).join(" | "):"produto não encontrado";
+  return{found:false,error:errSummary};
+}
+
+// ── FUNÇÃO LEGADA (mantida para compatibilidade, não é chamada) ──
 async function searchSupplier(product,sup,queryMeta){
   const set=ST.settings;
   const isIntl=["aliexpress.com","alibaba.com","amazon.com"].includes(sup.site);
@@ -640,7 +975,7 @@ async function aiAnalyze(product,results){
   const alerts=[];
   if(valid.some(r=>r.needsManualFreightCheck||r.freightNote==="não encontrado")) alerts.push("Frete não encontrado em alguns resultados — confirme no site antes de comprar.");
   if(valid.some(r=>(r.totalConfidence||100)<75)) alerts.push("Alguns resultados têm confiança média — confira o link do produto.");
-  if(valid.some(r=>r.currency&&r.currency!=="BRL")) alerts.push(`Cotação usada: USD ${fmt(set.usd)}, CNY ${set.cny?.toFixed?set.cny.toFixed(4):set.cny}, EUR ${fmt(set.eur)} (${set.rateSource||"manual"} ${set.rateTime||""}).`);
+  if(valid.some(r=>r.currency&&r.currency!=="BRL")) alerts.push(`Cotação usada: USD ${fmt4(set.usd)}, CNY ${fmt4(set.cny)}, EUR ${fmt4(set.eur)} (${set.rateSource||"manual"} ${set.rateTime||""}).`);
   return{
     bestChoice:bestRecommended?.supplier||bestPrice?.supplier||"—",
     bestPriceOnly:bestPrice?.supplier||"—",
@@ -663,53 +998,64 @@ function supplierLine(s){
 async function searchAllSuppliers(product,targets,queryMeta){
   const set=ST.settings;
   const supplierList=targets.map(supplierLine).join("\n");
-  const prompt=`Você é um agente de comparação de preços. Pesquise o produto abaixo nos fornecedores listados usando Google Search.
+  const prompt=`Você é um agente especialista em comparação de preços. Pesquise o produto abaixo em TODOS os fornecedores listados usando Google Search e retorne dados 100% reais.
 
 PRODUTO: "${product}"
 
-FORNECEDORES ATIVOS:
+FORNECEDORES ATIVOS (pesquise todos):
 ${supplierList}
 
-REGRAS IMPORTANTES:
-- Faça a pesquisa de todos os fornecedores nesta única resposta.
-- Para cada fornecedor, use busca com site específico, exemplo: "${product} site:dominio".
-- Retorne somente resultados do produto correto, não acessórios, peças, capinhas, cabos ou similares, exceto se o usuário tiver pesquisado exatamente esse tipo de produto.
-- Priorize produto exato, preço real visível, link real de produto/anúncio, vendedor e avaliação real quando disponíveis.
-- Não invente preço, frete, vendedor, avaliação, reviews ou link.
-- Se não tiver preço e link confiáveis de um fornecedor, retorne found:false para esse fornecedor.
-- Frete: se for "frete grátis", use freight:0 e freightNote:"grátis confirmado". Se aparecer valor real, use o valor. Se não aparecer, use freight:0, freightNote:"não encontrado", needsManualFreightCheck:true.
-- Moedas válidas: BRL, USD, CNY, EUR.
+INSTRUÇÕES DE PESQUISA:
+1. Para cada fornecedor, use busca: "${product}" site:DOMINIO
+2. Analise os resultados e identifique o produto correto — NÃO retorne acessórios, capas, cabos, peças ou produtos genéricos similares, a menos que o usuário tenha pesquisado exatamente isso.
+3. Se encontrar MÚLTIPLOS produtos para o mesmo fornecedor, selecione o MELHOR usando este critério de custo-benefício:
+   a) Calcule um score: score = (avaliação_produto * 20) + (reviews / 100) - (preço_relativo * 15)
+   b) Priorize: produto com avaliação ≥ 4.0 + menor preço + mais reviews
+   c) Se houver produto 30% mais caro mas com avaliação muito superior (≥4.5 vs <3.5), prefira o mais barato
+   d) NUNCA retorne produto sem avaliação quando houver alternativa equivalente com avaliação
+4. Colete: preço real visível, avaliação do produto, número de avaliações, nome do vendedor se disponível, frete, link direto do produto.
+5. NÃO invente nenhum dado. Se não encontrar preço real, retorne found:false para esse fornecedor.
 
-RETORNE APENAS JSON VÁLIDO neste formato:
+SELEÇÃO DO MELHOR PRODUTO (regra de ouro):
+- Menor preço + boa avaliação (≥3.5) = ESCOLHER
+- Menor preço sem avaliação nenhuma + alternativa com avaliação = ESCOLHER a com avaliação
+- Diferença de até 20% no preço com avaliação muito melhor = ESCOLHER a melhor avaliada
+
+REGRAS DE FRETE:
+- "Frete grátis" confirmado → freight:0, freightNote:"grátis confirmado"
+- Valor real encontrado → use o valor, freightNote:"real encontrado"
+- Não encontrado → freight:0, freightNote:"não encontrado", needsManualFreightCheck:true
+
+RETORNE APENAS JSON VÁLIDO neste formato exato:
 {
   "results":[
     {
       "supplierId":"ml",
       "found":true,
-      "productName":"nome exato do produto",
+      "productName":"nome exato do produto escolhido como melhor custo-benefício",
       "sellerName":"vendedor se encontrado ou vazio",
       "sellerRating":"avaliação do vendedor se encontrada ou vazio",
       "sellerReviews":0,
-      "productRating":"avaliação do produto se encontrada ou vazio",
+      "productRating":"avaliação real do produto (ex: 4.5) ou vazio se não encontrada",
       "productReviews":0,
       "price":0.00,
       "priceMin":0.00,
       "priceMax":0.00,
       "currency":"BRL",
-      "link":"https://link-real-do-produto",
+      "link":"https://link-real-e-direto-do-produto",
       "available":true,
       "sellers":1,
       "freight":0.00,
       "freightNote":"grátis confirmado|real encontrado|não encontrado",
       "needsManualFreightCheck":false,
-      "priceType":"real",
+      "priceType":"real|a_partir_de|faixa|não_encontrado",
       "priceSourceText":"trecho curto que comprova o preço",
       "isExactProduct":true,
       "exactMatchScore":85,
       "priceConfidence":85,
       "totalConfidence":85,
       "warnings":[],
-      "note":""
+      "note":"motivo da escolha se houver múltiplos produtos disponíveis"
     }
   ]
 }`;
@@ -779,7 +1125,7 @@ RETORNE APENAS JSON VÁLIDO neste formato:
 }
 
 // ══════════════════════════════════════════════════════
-// SEARCH FLOW
+// SEARCH FLOW — por fornecedor, com progresso ao vivo
 // ══════════════════════════════════════════════════════
 async function doSearch(){
   const inp=document.getElementById("q-inp");
@@ -792,33 +1138,58 @@ async function doSearch(){
 
   ST.query=q;
   ST.searching=true;ST.results=[];ST.insight=null;ST.meta=null;ST.expandId=null;ST.searchErrors=[];
-  ST.progDone=0;ST.progTotal=targets.length;ST.progCur="Preparando cotação";
+  ST.progDone=0;ST.progTotal=targets.length;ST.progCur=targets[0]?.name||"";
   nav("results");
 
   const queryMeta=interpretQuery(q);
-
-  // Cotação atualiza de hora em hora sem gastar Gemini.
   const hasIntl=targets.some(s=>s.cur!=="BRL");
   if(hasIntl)await fetchLiveRates();
 
-  ST.progCur="Buscando em "+targets.length+" fornecedor(es)";updateProg();
-  try{
-    const found=await searchAllSuppliers(q,targets,queryMeta);
-    ST.results=found.sort((a,b)=>a.brl-b.brl);
-  }catch(e){
-    const msg=e?.message||String(e);
-    console.error("[PriceIQ search]",msg);
-    ST.searchErrors.push({supplier:"Gemini",message:msg});
-    toast("Busca falhou: "+msg,"err");
-  }
+  // ── Busca em paralelo — todos os fornecedores ao mesmo tempo, resultados aparecem conforme cada um termina ──
+  let quotaHit=false;
+  const tasks=targets.map(sup=>{
+    return Promise.race([
+      searchOneSupplier(q,sup,queryMeta),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error("tempo esgotado para "+sup.name)),40000))
+    ]).then(r=>{
+      ST.progDone++;ST.progCur=sup.name;
+      if(r&&r.found){
+        ST.results.push(r);
+        ST.results.sort((a,b)=>a.brl-b.brl);
+        renderResultCards();
+      }else if(r&&r.error){
+        ST.searchErrors.push({supplier:sup.name,message:r.error});
+        if(r.quotaExceeded)quotaHit=true;
+      }
+      updateProg();
+      return r;
+    }).catch(e=>{
+      ST.progDone++;
+      console.error("[PriceIQ]",sup.name,e);
+      ST.searchErrors.push({supplier:sup.name,message:e.message||String(e)});
+      if(isQuotaError(e))quotaHit=true;
+      updateProg();
+      return{found:false,error:e.message};
+    });
+  });
+  await Promise.allSettled(tasks);
 
-  ST.progDone=targets.length;updateProg();
   ST.searching=false;
   const m={id:"s"+Date.now(),query:q,ts:new Date().toISOString(),
     count:ST.results.length,bestBRL:ST.results[0]?.brl||0,bestSup:ST.results[0]?.supplier||""};
   ST.meta=m;
   ST.history=[m,...ST.history.slice(0,49)];
   persist();renderResults();
+
+  // Mostra erros se não houve nenhum resultado
+  if(!ST.results.length&&ST.searchErrors.length){
+    const hasQuota=ST.searchErrors.some(e=>/quota|429|esgotad|exceeded|rate limit/i.test(e.message||""));
+    if(hasQuota)toast("Quota Gemini esgotada — veja a caixa de erro abaixo.","err");
+    else{
+      const errMsg=ST.searchErrors.map(e=>e.supplier+": "+e.message).join(" | ");
+      toast("Nenhum resultado. "+errMsg.slice(0,120),"err");
+    }
+  }
 
   if(ST.results.length){
     ST.aiLoading=true;renderAiBox();
@@ -876,9 +1247,9 @@ function renderHome(){
       <div>
         <p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px">Cotação ${s.rateSource||"—"}</p>
         <div style="display:flex;gap:12px;flex-wrap:wrap">
-          <span style="color:#E8F0FE;font-size:13px;font-weight:600">USD <span style="color:#00D4FF">${s.usd>0?fmt(s.usd):"—"}</span></span>
-          <span style="color:#E8F0FE;font-size:13px;font-weight:600">CNY <span style="color:#00D4FF">${s.cny>0?s.cny.toFixed(4):"—"}</span></span>
-          <span style="color:#E8F0FE;font-size:13px;font-weight:600">EUR <span style="color:#00D4FF">${s.eur>0?fmt(s.eur):"—"}</span></span>
+          <span style="color:#E8F0FE;font-size:13px;font-weight:600">USD <span style="color:#00D4FF">${s.usd>0?fmt4(s.usd):"—"}</span></span>
+          <span style="color:#E8F0FE;font-size:13px;font-weight:600">CNY <span style="color:#00D4FF">${s.cny>0?fmt4(s.cny):"—"}</span></span>
+          <span style="color:#E8F0FE;font-size:13px;font-weight:600">EUR <span style="color:#00D4FF">${s.eur>0?fmt4(s.eur):"—"}</span></span>
         </div>
         <p style="color:${rateStale?"#FFB800":"#4A5568"};font-size:11px;margin-top:3px">
           ${rateStale?"⚠️ Cotação antiga — ":""}Última atualização: ${s.rateTime||"nunca"} (${rateAge()})
@@ -900,10 +1271,16 @@ function renderHome(){
       </div>
       <div style="margin-bottom:18px">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-          <span style="color:#4A5568;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px">Pesquisar em (${selCount})</span>
-          ${ST.selIds.length?`<button style="background:none;border:none;color:#4A5568;font-size:12px;font-weight:600;cursor:pointer" onclick="clearSel()">Limpar</button>`:""}
+          <span style="color:#4A5568;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.6px">
+            ${ST.selIds.length?`${ico.check} <span style="color:#00D4FF">${ST.selIds.length} selecionado${ST.selIds.length!==1?"s":""}</span>`:`Pesquisar em todos (${active.length})`}
+          </span>
+          <div style="display:flex;gap:8px">
+            ${ST.selIds.length<active.length?`<button style="background:none;border:none;color:#00D4FF;font-size:12px;font-weight:600;cursor:pointer" onclick="selAll()">Todos</button>`:""}
+            ${ST.selIds.length?`<button style="background:none;border:none;color:#4A5568;font-size:12px;font-weight:600;cursor:pointer" onclick="clearSel()">Limpar</button>`:""}
+          </div>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px">${chips}</div>
+        ${ST.selIds.length?`<p style="color:#4A5568;font-size:11px;margin-top:8px">${ico.info} Buscará apenas nos fornecedores selecionados acima. Sem seleção = busca em todos.</p>`:""}
       </div>
       <button class="btn btn-p" onclick="doSearch()">${ico.search} Buscar Preços Reais</button>
     </div>
@@ -921,10 +1298,15 @@ function renderHome(){
 
 async function refreshRates(){
   toast("Atualizando cotações…");
-  await fetchLiveRates(true);
+  const r=await fetchLiveRates(true);
   renderHome();
-  if(ST.settings.usd>0)toast(`Cotação atualizada: USD ${fmt(ST.settings.usd)}`);
-  else toast("Não foi possível atualizar. Usando última cotação salva.","err");
+  if(!r.fromCache&&!r.partial)
+    toast(`Cotação atualizada: USD ${fmt4(ST.settings.usd)} · EUR ${fmt4(ST.settings.eur)} · CNY ${fmt4(ST.settings.cny)}`);
+  else if(!r.fromCache&&r.partial)
+    toast(`Atualização parcial: USD ${fmt4(ST.settings.usd)} (algumas moedas mantiveram valor anterior)`);
+  else if(ST.settings.usd>0)
+    toast(`Mantendo última cotação: USD ${fmt4(ST.settings.usd)} (próxima tentativa em 1min)`);
+  else toast("Sem cotação disponível — tente novamente em 1 minuto","err");
 }
 
 function recallQuery(idx){
@@ -939,6 +1321,7 @@ function toggleChip(btn){
   renderHome();
 }
 function clearSel(){ST.selIds=[];renderHome()}
+function selAll(){ST.selIds=ST.suppliers.filter(s=>s.on).map(s=>s.id);renderHome()}
 
 // ══════════════════════════════════════════════════════
 // RESULTS
@@ -960,11 +1343,12 @@ function renderResults(){
       <div class="prog-wrap"><div id="prog-fill" class="prog-fill" style="width:0%"></div></div>
     </div>`:"";
 
+  const hasQuotaErr=(ST.searchErrors||[]).some(e=>/quota|429|esgotad|exceeded|rate limit/i.test(e.message||""));
   const errorHTML=(ST.searchErrors&&ST.searchErrors.length)?`
     <div style="margin-top:14px;text-align:left;background:rgba(255,77,109,.08);border:1px solid rgba(255,77,109,.25);border-radius:12px;padding:12px">
-      <p style="color:#FF4D6D;font-weight:800;font-size:13px;margin-bottom:8px">Erro técnico da busca</p>
-      ${ST.searchErrors.slice(0,3).map(e=>`<p style="color:#FFB8C6;font-size:12px;margin-bottom:5px"><strong>${esc(e.supplier)}:</strong> ${esc(e.message)}</p>`).join("")}
-      <p style="color:#8896AA;font-size:11px;margin-top:8px">Se aparecer quota, espere 1 minuto. A busca agora usa 1 chamada Gemini por pesquisa inteira.</p>
+      <p style="color:#FF4D6D;font-weight:800;font-size:13px;margin-bottom:8px">${hasQuotaErr?"⚠️ Quota da Gemini API esgotada":"Erro técnico da busca"}</p>
+      ${hasQuotaErr?`<p style="color:#FFD0DA;font-size:12px;margin-bottom:8px;line-height:1.5">A chave gratuita da Gemini atingiu o limite diário (1.500 buscas/dia no modelo flash-lite, 250 no modelo flash). Aguarde até a meia-noite UTC, troque de modelo nas Configurações, ou crie outra chave em <strong>aistudio.google.com</strong>.</p>`:""}
+      ${ST.searchErrors.slice(0,5).map(e=>`<p style="color:#FFB8C6;font-size:12px;margin-bottom:5px"><strong>${esc(e.supplier)}:</strong> ${esc(e.message).slice(0,180)}</p>`).join("")}
     </div>`:"";
   const empty=!ST.searching&&!ST.results.length?`
     <div style="text-align:center;padding:60px 20px;background:#111827;border-radius:18px;border:1px solid #1C2A3A">
@@ -973,6 +1357,8 @@ function renderResults(){
       <button class="btn btn-g btn-sm" onclick="nav('home')" style="margin:0 auto">Nova busca</button>
       ${errorHTML}
     </div>`:"";
+  // Mostra erros mesmo com resultados parciais (ex: quota Gemini esgotou no meio)
+  const partialErrorHTML=(!ST.searching&&ST.results.length&&ST.searchErrors.length)?errorHTML:"";
 
   document.getElementById("page-results").innerHTML=`
     <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;gap:10px">
@@ -989,6 +1375,7 @@ function renderResults(){
     </div>
     ${progHTML}
     <div id="ai-area"></div>
+    ${partialErrorHTML}
     ${empty}
     <div id="cards-area">${buildCards()}</div>
   `;
@@ -1051,7 +1438,7 @@ function buildCards(){
     // Cotação display
     const rateDisplay=r.currency!=="BRL"
       ?`<div style="background:#070B14;border-radius:8px;padding:7px 10px;font-size:11px;color:#4A5568;margin-bottom:8px">
-          ${ico.info} <span style="color:#8896AA">${esc(r.currency)}/BRL: <strong style="color:#00D4FF">${r.exchangeRateUsed||"—"}</strong></span>
+          ${ico.info} <span style="color:#8896AA">${esc(r.currency)}/BRL: <strong style="color:#00D4FF">${typeof r.exchangeRateUsed==="number"?fmt4(r.exchangeRateUsed):"—"}</strong></span>
           <span style="margin-left:8px">${r.rateSource?"Fonte: "+esc(r.rateSource):"cotação manual"}</span>
           ${r.rateTime?`<span style="margin-left:6px">· ${esc(r.rateTime)}</span>`:""}
         </div>`:""
@@ -1066,7 +1453,7 @@ function buildCards(){
           <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Avaliação</p><p style="font-size:13px">${ratingDisplay}</p></div>
           <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Preço original</p><p style="color:#E8F0FE;font-size:13px;font-weight:700">${esc(r.currency)} ${fmt(r.price)}</p></div>
           <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Preço em BRL</p><p style="color:#00D4FF;font-size:13px;font-weight:700">R$ ${fmt(r.priceBRL||r.brl)}</p></div>
-          ${r.currency!=="BRL"?`<div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Cotação usada</p><p style="color:#E8F0FE;font-size:13px">${esc(r.exchangePair)} = ${r.exchangeRateUsed} · ${esc(r.rateSource||"manual")} ${esc(r.rateTime||"")}</p></div>`:""}
+          ${r.currency!=="BRL"?`<div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Cotação usada</p><p style="color:#E8F0FE;font-size:13px">${esc(r.exchangePair)} = ${typeof r.exchangeRateUsed==="number"?fmt4(r.exchangeRateUsed):"—"} · ${esc(r.rateSource||"manual")} ${esc(r.rateTime||"")}</p></div>`:""}
           <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Disponível</p><p style="color:#E8F0FE;font-size:13px">${r.available?"✅ Sim":"❌ Não"}</p></div>
           ${r.sellers>1?`<div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Vendedores</p><p style="color:#E8F0FE;font-size:13px">${r.sellers} ofertas · R$ ${fmt(r.priceMinBrl)}–R$ ${fmt(r.priceMaxBrl)}</p></div>`:""}
           <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Confiança</p><p class="${r.totalConfidence>=85?"conf-high":r.totalConfidence>=70?"conf-med":"conf-low"}" style="font-size:13px;font-weight:700">${r.totalConfidence||"—"}%</p></div>
@@ -1118,10 +1505,14 @@ function buildCards(){
         </div>
         <!-- Botões — todos com mesmo estilo base -->
         <div class="arow">
-          <a href="${esc(r.link)}" target="_blank" rel="noopener noreferrer" class="arow-btn primary">${ico.link} Ver Produto</a>
+          <a href="${esc(r.link)}" target="_blank" rel="noopener noreferrer" class="arow-btn${r.linkType==="product"?" primary":""}" title="${r.linkType==="product"?"Link direto ao produto":"Link para busca no site — produto real encontrado, abra e procure pelo nome"}">
+            ${r.linkType==="product"?ico.link:ico.search}
+            ${r.linkType==="product"?"Ver Produto":"Buscar no site"}
+          </a>
           <button class="arow-btn icon-only" data-rid="${esc(r.id)}" onclick="toggleExpand(this)" title="Detalhes">${ico.eye}</button>
           <button class="arow-btn icon-only danger" data-rid="${esc(r.id)}" onclick="delResult(this)" title="Remover">${ico.trash}</button>
         </div>
+        ${r.linkType!=="product"?`<p style="color:#FFB800;font-size:10px;margin-top:4px">${ico.alert} Link de busca — produto encontrado no site, mas sem link direto. Procure pelo nome após abrir.</p>`:""}
         <!-- Horário -->
         <p style="color:#4A5568;font-size:10px;margin-top:8px;text-align:right">${fmtDate(r.ts)}</p>
       </div>
@@ -1207,7 +1598,7 @@ async function doExport(type){
     const q=ST.meta?.query||ST.query;
     const s=ST.settings;
     const lines=[`🔍 *PriceIQ — ${q}*\n📅 ${new Date().toLocaleString("pt-BR")}\n`];
-    if(s.usd>0)lines.push(`💱 Cotação: USD ${fmt(s.usd)} · CNY ${s.cny} · Fonte: ${s.rateSource||"manual"}\n`);
+    if(s.usd>0)lines.push(`💱 Cotação: USD ${fmt4(s.usd)} · CNY ${fmt4(s.cny)} · EUR ${fmt4(s.eur)} · Fonte: ${s.rateSource||"manual"}\n`);
     ST.results.forEach((r,i)=>{
       const m=["🥇","🥈","🥉"][i]||`${i+1}.`;
       lines.push(`${m} *${r.supplier}*`);
@@ -1253,16 +1644,26 @@ function renderSuppliers(){
     </div>`).join("");
 
   document.getElementById("page-suppliers").innerHTML=`
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div>
         <h2 style="color:#E8F0FE;font-size:20px;font-weight:800;margin-bottom:3px">Fornecedores</h2>
         <p style="color:#4A5568;font-size:13px">${ST.suppliers.length} cadastrados · ${active} ativos</p>
       </div>
       <button class="btn btn-p btn-sm" onclick="openNewSup()">${ico.plus} Adicionar</button>
     </div>
+    <div style="display:flex;gap:8px;margin-bottom:16px">
+      <button class="btn btn-g btn-sm" onclick="resetSuppliers()" style="flex:1">${ico.refresh} Restaurar padrão</button>
+    </div>
     <div id="sup-form-area">${formHTML}</div>
     <div id="sup-list">${list}</div>
   `;
+}
+
+function resetSuppliers(){
+  if(!confirm("Restaurar a lista padrão de fornecedores? Isso substituirá os fornecedores atuais (não afeta histórico nem cotações)."))return;
+  ST.suppliers=JSON.parse(JSON.stringify(DEF_SUP));
+  ST.selIds=[];
+  persist();toast("Fornecedores restaurados!");renderSuppliers();
 }
 
 function buildSupForm(){
@@ -1441,19 +1842,19 @@ function renderSettings(){
 
       <!-- Cotação ao vivo -->
       <div class="card" style="border-color:rgba(0,212,255,.28)">
-        <p style="color:#00D4FF;font-size:13px;font-weight:700;text-transform:uppercase;margin-bottom:14px;letter-spacing:.5px">💱 Cotação — automática</p>
+        <p style="color:#00D4FF;font-size:13px;font-weight:700;text-transform:uppercase;margin-bottom:14px;letter-spacing:.5px">💱 Cotação ao vivo — automática (1min)</p>
         <div class="g3" style="margin-bottom:14px">
           <div style="background:#070B14;border-radius:10px;padding:10px 12px">
             <p style="color:#4A5568;font-size:10px;margin-bottom:3px">USD/BRL</p>
-            <p style="color:#00D4FF;font-weight:800;font-size:16px">R$ ${s.usd>0?fmt(s.usd):"—"}</p>
+            <p style="color:#00D4FF;font-weight:800;font-size:16px">R$ ${s.usd>0?fmt4(s.usd):"—"}</p>
           </div>
           <div style="background:#070B14;border-radius:10px;padding:10px 12px">
             <p style="color:#4A5568;font-size:10px;margin-bottom:3px">CNY/BRL</p>
-            <p style="color:#00D4FF;font-weight:800;font-size:16px">R$ ${s.cny>0?s.cny.toFixed(4):"—"}</p>
+            <p style="color:#00D4FF;font-weight:800;font-size:16px">R$ ${s.cny>0?fmt4(s.cny):"—"}</p>
           </div>
           <div style="background:#070B14;border-radius:10px;padding:10px 12px">
             <p style="color:#4A5568;font-size:10px;margin-bottom:3px">EUR/BRL</p>
-            <p style="color:#00D4FF;font-weight:800;font-size:16px">R$ ${s.eur>0?fmt(s.eur):"—"}</p>
+            <p style="color:#00D4FF;font-weight:800;font-size:16px">R$ ${s.eur>0?fmt4(s.eur):"—"}</p>
           </div>
         </div>
         <p style="color:${rateStale?"#FFB800":"#4A5568"};font-size:12px;margin-bottom:12px">
@@ -1462,14 +1863,14 @@ function renderSettings(){
         <button class="btn btn-p" onclick="refreshRatesSettings()">${ico.refresh} Atualizar cotação agora</button>
       </div>
 
-      <!-- Câmbio manual (fallback) -->
+      <!-- Câmbio manual -->
       <div class="card">
-        <p style="color:#8896AA;font-size:12px;font-weight:700;text-transform:uppercase;margin-bottom:6px;letter-spacing:.5px">Câmbio manual (fallback)</p>
-        <p style="color:#4A5568;font-size:11px;margin-bottom:14px">Usado apenas se a atualização automática falhar</p>
+        <p style="color:#8896AA;font-size:12px;font-weight:700;text-transform:uppercase;margin-bottom:6px;letter-spacing:.5px">✏️ Correção manual de câmbio</p>
+        <p style="color:#4A5568;font-size:11px;margin-bottom:14px">Edite os valores e clique em <strong style="color:#8896AA">Salvar</strong> para aplicar imediatamente. A cotação manual será usada por 1 minuto antes da próxima atualização automática.</p>
         <div class="g3">
-          <div><label class="lbl">USD→BRL</label><input id="set-usd" type="number" step=".01" class="inp" value="${s.usd}"/></div>
-          <div><label class="lbl">EUR→BRL</label><input id="set-eur" type="number" step=".01" class="inp" value="${s.eur}"/></div>
-          <div><label class="lbl">CNY→BRL</label><input id="set-cny" type="number" step=".01" class="inp" value="${s.cny}"/></div>
+          <div><label class="lbl">USD→BRL</label><input id="set-usd" type="number" step=".0001" class="inp" value="${s.usd}"/></div>
+          <div><label class="lbl">EUR→BRL</label><input id="set-eur" type="number" step=".0001" class="inp" value="${s.eur}"/></div>
+          <div><label class="lbl">CNY→BRL</label><input id="set-cny" type="number" step=".0001" class="inp" value="${s.cny}"/></div>
         </div>
       </div>
 
@@ -1508,26 +1909,43 @@ function renderSettings(){
 
 async function refreshRatesSettings(){
   toast("Atualizando cotações…");
-  await fetchLiveRates(true);
+  const r=await fetchLiveRates(true);
   renderSettings();
-  if(ST.settings.rateTimestamp)toast("Cotação atualizada!");
-  else toast("Não foi possível atualizar. Último valor mantido.","err");
+  if(!r.fromCache&&!r.partial)
+    toast(`Cotação atualizada: USD ${fmt4(ST.settings.usd)} · EUR ${fmt4(ST.settings.eur)} · CNY ${fmt4(ST.settings.cny)}`);
+  else if(!r.fromCache&&r.partial)
+    toast(`Atualização parcial: USD ${fmt4(ST.settings.usd)}`);
+  else if(ST.settings.usd>0)
+    toast(`Mantendo última cotação: USD ${fmt4(ST.settings.usd)}`);
+  else toast("Sem cotação disponível","err");
 }
 
 function saveSettings(){
   const g=id=>{const el=document.getElementById(id);return el?el.value:""};
+  const newUsd=parseFloat(g("set-usd"))||ST.settings.usd;
+  const newEur=parseFloat(g("set-eur"))||ST.settings.eur;
+  const newCny=parseFloat(g("set-cny"))||ST.settings.cny;
+  const ratesChanged=(newUsd!==ST.settings.usd||newEur!==ST.settings.eur||newCny!==ST.settings.cny);
+  const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
   ST.settings={
     ...ST.settings,
-    usd:parseFloat(g("set-usd"))||ST.settings.usd,
-    eur:parseFloat(g("set-eur"))||ST.settings.eur,
-    cny:parseFloat(g("set-cny"))||ST.settings.cny,
+    usd:newUsd,
+    eur:newEur,
+    cny:newCny,
     freight:parseFloat(g("set-frt"))||25,
     margin:parseFloat(g("set-mrg"))||30,
     apiKey:String(g("set-api")||ST.settings.apiKey||"").trim(),
     geminiModel:String(g("set-model")||ST.settings.geminiModel||"gemini-2.5-flash-lite").trim(),
+    // Quando o usuário altera taxas manualmente, marca como manual e atualiza timestamp
+    // para que fetchLiveRates() trate os valores novos como cache válido por 1min
+    ...(ratesChanged?{rateSource:"manual",rateTime:timeStr,rateTimestamp:Date.now()}:{})
   };
   LS.s("piq_gemini_key",ST.settings.apiKey);
-  persist();toast("Configurações salvas!");renderSettings();
+  persist();
+  if(ratesChanged)toast(`Taxas manuais salvas: USD ${fmt4(newUsd)} · EUR ${fmt4(newEur)} · CNY ${fmt4(newCny)}`);
+  else toast("Configurações salvas!");
+  updateNavRateSub();
+  renderSettings();
 }
 
 // ══════════════════════════════════════════════════════
@@ -1535,7 +1953,19 @@ function saveSettings(){
 // ══════════════════════════════════════════════════════
 renderHome();
 // Busca cotação em background ao abrir o app
-fetchLiveRates().then(()=>updateNavRateSub()).catch(()=>{});
+fetchLiveRates().then(()=>{
+  updateNavRateSub();
+  if(ST.view==="home")renderHome();
+  if(ST.view==="settings")renderSettings();
+}).catch(()=>{});
+// Auto-refresh de cotação a cada 1 minuto
+setInterval(()=>{
+  fetchLiveRates(true).then(()=>{
+    updateNavRateSub();
+    if(ST.view==="home")renderHome();
+    if(ST.view==="settings")renderSettings();
+  }).catch(()=>{});
+},RATE_TTL);
 </script>
 </body>
 </html>
