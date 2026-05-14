@@ -677,6 +677,40 @@ async function searchOneSupplier(product,sup,queryMeta){
   const jsonTpl=`{"found":true,"productName":"nome real","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${supCur}","link":"url","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"trecho do preço","exactMatchScore":80,"priceConfidence":80,"totalConfidence":80,"warnings":[],"note":""}`;
 
   const errors=[];
+  const siteNoWww=supSite.replace(/^www\./,"").toLowerCase();
+  // Extrai do conteúdo Jina o PRIMEIRO link de produto direto (não busca/categoria)
+  const findDirectUrl=(content)=>{
+    if(!content)return null;
+    // 1) Padrões de URL de produto por marketplace
+    const patterns=[
+      /https?:\/\/[^\s)"'<>]*mercadolivre\.com\.br\/[^\s)"'<>]*(?:MLB-?\d{6,}|\/p\/MLB\d{6,})[^\s)"'<>]*/i,
+      /https?:\/\/[^\s)"'<>]*amazon\.com(?:\.br)?\/(?:[^\s)"'<>]*\/)?dp\/[A-Z0-9]{10}[^\s)"'<>]*/i,
+      /https?:\/\/[^\s)"'<>]*shopee\.com\.br\/[^\s)"'<>]*-i\.\d{4,}\.\d{4,}[^\s)"'<>]*/i,
+      /https?:\/\/[^\s)"'<>]*magazineluiza\.com\.br\/[^\s)"'<>]*\/p\/[a-z0-9]{6,}[^\s)"'<>]*/i,
+      /https?:\/\/[^\s)"'<>]*aliexpress\.com\/item\/\d{8,}[^\s)"'<>]*/i,
+      /https?:\/\/[^\s)"'<>]*alibaba\.com\/product-detail\/[^\s)"'<>]+/i,
+    ];
+    for(const p of patterns){
+      const m=content.match(p);
+      if(m)return m[0].replace(/[).,;:!?]+$/,"");
+    }
+    return null;
+  };
+  // Para fornecedores personalizados: extrai primeiro link interno do domínio que NÃO seja a página de busca
+  const findCustomUrl=(content,siteHost,searchPath)=>{
+    if(!content||!siteHost)return null;
+    const escSite=siteHost.replace(/\./g,"\\.");
+    const rx=new RegExp(`https?://(?:www\\.)?${escSite}/[^\\s)"'<>]{4,}`,"gi");
+    const matches=content.match(rx)||[];
+    for(const u of matches){
+      const clean=u.replace(/[).,;:!?]+$/,"");
+      // pula URLs que são a própria página de busca
+      if(searchPath&&clean.includes(searchPath))continue;
+      if(/\/(search|busca|s\?|find|q=)/i.test(clean))continue;
+      return clean;
+    }
+    return null;
+  };
 
   // ── FASE 1: Jina Reader na página de busca do site ──
   let pageContent="";
@@ -688,9 +722,9 @@ async function searchOneSupplier(product,sup,queryMeta){
   }
 
   if(pageContent&&pageContent.length>300){
-    const prompt=`Extrator de e-commerce. Analise a página de busca real do ${supName} e retorne o melhor produto "${product}".
+    const prompt=`Extrator de e-commerce. Analise a página de busca real do ${supName} (${supSite}) e retorne o melhor produto "${product}".
 
-CONTEÚDO DA PÁGINA (${supSite}):
+CONTEÚDO DA PÁGINA:
 ---
 ${pageContent.slice(0,7000)}
 ---
@@ -699,14 +733,11 @@ REGRAS:
 1. NÃO retorne acessórios/capas/cabos/películas a menos que o usuário pediu.
 2. Se múltiplos: escolha menor preço + melhor avaliação.
 3. Extraia SOMENTE dados visíveis no texto. NÃO invente nada.
-4. Para "link": procure URLs de produto específico no conteúdo:
-   - Mercado Livre: contém /MLB (ex: /p/MLB1234567 ou MLB-1234567890)
-   - Amazon: contém /dp/ seguido de código (ex: /dp/B0ABC12345)
-   - Shopee: contém -i. com dois números (ex: -i.123456.987654)
-   - Magalu: contém /p/ com código alfanumérico (ex: /p/abc12345xp/)
-   - AliExpress: contém /item/ com número longo (ex: /item/1234567890.html)
-   - Alibaba: contém /product-detail/
-   Se não encontrar URL de produto específico, use exatamente: "${searchUrl}"
+4. Para "link" — PROCURE COM ATENÇÃO uma URL de produto específico no conteúdo:
+   • Padrões comuns: /MLB (Mercado Livre), /dp/ (Amazon), -i. (Shopee), /p/ (Magalu/genérico), /item/ (AliExpress), /product-detail/ (Alibaba), /produto/, /products/, /pd/, /pdp/
+   • Aceite QUALQUER URL completa começando com http(s):// que contenha "${siteNoWww}" e que NÃO seja a página de busca/categoria
+   • Em sites personalizados, links de produto geralmente têm um ID/slug único após o domínio (ex: /produto/cooler-asus-rog-12345)
+   • Se realmente não encontrar URL de produto específico, use: "${searchUrl}"
 5. Se não encontrar "${product}" com preço real: {"found":false,"reason":"..."}
 
 RETORNE APENAS este JSON:
@@ -715,6 +746,11 @@ ${jsonTpl}`;
     try{
       const raw=await callGemini(prompt,1000,false);
       const p=parseJson(raw);
+      // Pós-processamento: se o Gemini não conseguiu pegar link direto, escaneia o conteúdo Jina
+      if(p&&p.found!==false&&!isProductUrl(String(p.link||""))){
+        const direct=findDirectUrl(pageContent)||findCustomUrl(pageContent,siteNoWww,"/search");
+        if(direct&&(direct.includes(siteNoWww)||direct.includes(supSite)))p.link=direct;
+      }
       const r=buildResult(p,product,sup,set,queryMeta,searchUrl);
       if(r.found)return r;
     }catch(e){
@@ -757,6 +793,11 @@ ${jsonTpl}`;
     try{
       const raw=await callGemini(prompt,1000,false);
       const p=parseJson(raw);
+      // Pós-processamento: se o Gemini não pegou link direto, escaneia snippets do Google
+      if(p&&p.found!==false&&!isProductUrl(String(p.link||""))){
+        const direct=findDirectUrl(googleContent)||findCustomUrl(googleContent,siteNoWww,"google.com");
+        if(direct&&(direct.includes(siteNoWww)||direct.includes(supSite)))p.link=direct;
+      }
       const r=buildResult(p,product,sup,set,queryMeta,searchUrl);
       if(r.found)return r;
     }catch(e){
@@ -1101,43 +1142,34 @@ async function doSearch(){
   const hasIntl=targets.some(s=>s.cur!=="BRL");
   if(hasIntl)await fetchLiveRates();
 
-  // ── Busca fornecedor por fornecedor com resultado ao vivo ──
-  for(let i=0;i<targets.length;i++){
-    const sup=targets[i];
-    ST.progDone=i;ST.progCur=sup.name;updateProg();
-    try{
-      const r=await Promise.race([
-        searchOneSupplier(q,sup,queryMeta),
-        new Promise((_,rej)=>setTimeout(()=>rej(new Error("tempo esgotado para "+sup.name)),55000))
-      ]);
-      if(r.found){
+  // ── Busca em paralelo — todos os fornecedores ao mesmo tempo, resultados aparecem conforme cada um termina ──
+  let quotaHit=false;
+  const tasks=targets.map(sup=>{
+    return Promise.race([
+      searchOneSupplier(q,sup,queryMeta),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error("tempo esgotado para "+sup.name)),40000))
+    ]).then(r=>{
+      ST.progDone++;ST.progCur=sup.name;
+      if(r&&r.found){
         ST.results.push(r);
         ST.results.sort((a,b)=>a.brl-b.brl);
         renderResultCards();
-      }else if(r.error){
+      }else if(r&&r.error){
         ST.searchErrors.push({supplier:sup.name,message:r.error});
-        if(r.quotaExceeded){
-          // Para todos os fornecedores seguintes — quota Gemini esgotada
-          ST.progDone=i+1;updateProg();
-          for(let j=i+1;j<targets.length;j++){
-            ST.searchErrors.push({supplier:targets[j].name,message:"Pulado — quota Gemini esgotada"});
-          }
-          break;
-        }
+        if(r.quotaExceeded)quotaHit=true;
       }
-    }catch(e){
+      updateProg();
+      return r;
+    }).catch(e=>{
+      ST.progDone++;
       console.error("[PriceIQ]",sup.name,e);
       ST.searchErrors.push({supplier:sup.name,message:e.message||String(e)});
-      if(isQuotaError(e)){
-        ST.progDone=i+1;updateProg();
-        for(let j=i+1;j<targets.length;j++){
-          ST.searchErrors.push({supplier:targets[j].name,message:"Pulado — quota Gemini esgotada"});
-        }
-        break;
-      }
-    }
-    ST.progDone=i+1;updateProg();
-  }
+      if(isQuotaError(e))quotaHit=true;
+      updateProg();
+      return{found:false,error:e.message};
+    });
+  });
+  await Promise.allSettled(tasks);
 
   ST.searching=false;
   const m={id:"s"+Date.now(),query:q,ts:new Date().toISOString(),
