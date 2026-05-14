@@ -1,0 +1,51 @@
+# ════════════════════════════════════════════════════════
+# PriceIQ — Ambiente de desenvolvimento (cloud / local)
+# ════════════════════════════════════════════════════════
+# Uso:
+#   docker compose up -d           # Sobe Postgres + Redis
+#   docker compose down            # Derruba tudo
+#   docker compose logs -f         # Acompanha logs
+# ════════════════════════════════════════════════════════
+# NÃO é necessário rodar isso para o app atual (index.html).
+# Serve apenas para o backend SaaS em construção (etapas futuras).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: priceiq-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-priceiq}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-priceiq}
+      POSTGRES_DB: ${POSTGRES_DB:-priceiq}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-priceiq}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: priceiq-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # backend e frontend serão adicionados nas próximas etapas
+
+volumes:
+  pgdata:
+    name: priceiq-pgdata
+  redisdata:
+    name: priceiq-redisdata

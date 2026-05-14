@@ -1,8 +1,16 @@
 {
+  "name": "priceiq",
+  "version": "0.2.0",
+  "private": true,
+  "description": "PriceIQ — SaaS de comparação de preços com cotação Investing.com ao vivo. Migração em andamento do single-file app para arquitetura web + API.",
   "scripts": {
-    "build": "echo \"single-file app: www/index.html ready\"",
+    "build:apk": "echo 'single-file app: index.html — ver capacitor.config.json'",
     "sync": "npx cap sync android",
-    "open": "npx cap open android"
+    "open": "npx cap open android",
+    "dev:up": "docker compose up -d",
+    "dev:down": "docker compose down",
+    "dev:logs": "docker compose logs -f",
+    "dev:ps": "docker compose ps"
   },
   "dependencies": {
     "@capacitor/android": "latest",
@@ -11,7 +19,12 @@
   "devDependencies": {
     "@capacitor/cli": "latest"
   },
-  "name": "priceiq-gemini-free",
-  "version": "1.0.0",
-  "private": true
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dornelasz/priceiq-app.git"
+  }
 }
