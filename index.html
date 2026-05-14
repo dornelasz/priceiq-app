@@ -381,92 +381,58 @@ const RATE_RANGES={
   CNY:[0.3,2.0],
 };
 
-// FONTE PRIMÁRIA — Investing.com via Jina Reader, com extração precisa.
-// O padrão "preço + variação assinada + percentual entre parênteses" só aparece
-// UMA VEZ na página, no bloco da cotação principal. Sanity-check por faixa.
 async function fetchInvestingRate(pair){
   const slug=pair.toLowerCase()+"-brl";
-  // Múltiplas URLs equivalentes — Jina pode falhar em uma e funcionar em outra
-  const urls=[
+  const range=RATE_RANGES[pair.toUpperCase()]||[0.01,100];
+  const hosts=[
+    "https://www.investing.com/currencies/"+slug,
     "https://br.investing.com/currencies/"+slug,
     "https://m.investing.com/currencies/"+slug,
-    "https://www.investing.com/currencies/"+slug,
   ];
-  const range=RATE_RANGES[pair.toUpperCase()]||[0.01,100];
+  const proxies=[
+    u=>"https://corsproxy.io/?"+encodeURIComponent(u),
+    u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
+    u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u),
+  ];
   let lastErr=null;
-
-  for(const url of urls){
-    try{
-      // Cache-buster — evita resposta cached do Jina
-      const r=await fetch("https://r.jina.ai/"+url+"?_t="+Date.now(),{
-        headers:{"Accept":"text/plain","X-Return-Format":"text"},
-        signal:AbortSignal.timeout(12000),
-        cache:"no-store"
-      });
-      if(!r.ok){lastErr=new Error("Jina HTTP "+r.status);continue;}
-      const txt=await r.text();
-
-      // PADRÃO PRINCIPAL: "X,XXXX +Y,YYYY (+Z,ZZ%)" — formato único da cotação principal
-      // Aceita vírgula ou ponto, sinais +/-/−, e quebras de linha entre os campos.
-      const re=/(\d{1,3}[,.]\d{2,4})[\s\n\r]*[+\-−][\s]*\d+[,.]\d+[\s\n\r]*\([+\-−][\s]*\d+[,.]\d+\s*%\)/g;
-      const matches=[...txt.matchAll(re)];
-      for(const m of matches){
-        const num=parseFloat(m[1].replace(",","."));
-        if(num>=range[0]&&num<=range[1])return num;
-      }
-
-      // PADRÃO 2: às vezes o "%" vem sem parênteses (formato mobile)
-      const re2=/(\d{1,3}[,.]\d{2,4})[\s\n\r]*[+\-−][\s]*\d+[,.]\d+[\s\n\r]*[+\-−][\s]*\d+[,.]\d+\s*%/g;
-      const matches2=[...txt.matchAll(re2)];
-      for(const m of matches2){
-        const num=parseFloat(m[1].replace(",","."));
-        if(num>=range[0]&&num<=range[1])return num;
-      }
-
-      // ÚLTIMO FALLBACK: procurar perto do nome do par "USD/BRL" e pegar
-      // o primeiro número 4 decimais que cai no range esperado
-      const pairUp=pair.toUpperCase()+"/BRL";
-      const idx=txt.indexOf(pairUp);
-      if(idx>=0){
-        const after=txt.slice(idx,idx+2000);
-        const allNums=after.match(/\d{1,3}[,.]\d{4}/g)||[];
-        for(const n of allNums){
-          const num=parseFloat(n.replace(",","."));
+  for(const host of hosts){
+    for(const mkProxy of proxies){
+      try{
+        const proxyUrl=mkProxy(host+"?_t="+Date.now());
+        const r=await fetch(proxyUrl,{cache:"no-store",signal:AbortSignal.timeout(10000)});
+        if(!r.ok){lastErr=new Error("HTTP "+r.status);continue;}
+        const html=await r.text();
+        // Investing uses data-test="instrument-price-last" for QA automation — stable attribute
+        const patterns=[
+          /data-test=["']instrument-price-last["'][^>]*>\s*([\d.,]+)\s*</i,
+          /"last":\s*"?([\d.]+)"?\s*[,}]/,
+          /"regularMarketPrice":\s*([\d.]+)/,
+          /"last_close":\s*"?([\d.]+)"?/,
+        ];
+        for(const p of patterns){
+          const m=html.match(p);
+          if(!m)continue;
+          let raw=m[1];
+          let num;
+          if(raw.includes(",")&&raw.includes(".")){
+            const lastComma=raw.lastIndexOf(",");
+            const lastDot=raw.lastIndexOf(".");
+            if(lastComma>lastDot)num=parseFloat(raw.replace(/\./g,"").replace(",","."));
+            else num=parseFloat(raw.replace(/,/g,""));
+          } else if(raw.includes(",")){
+            num=parseFloat(raw.replace(",","."));
+          } else {
+            num=parseFloat(raw);
+          }
           if(num>=range[0]&&num<=range[1])return num;
         }
+        lastErr=new Error("data-test not found in "+host);
+      }catch(e){
+        lastErr=e;
       }
-      lastErr=new Error("preço não localizado em "+url);
-    }catch(e){
-      lastErr=e;
-      console.warn("[Investing falhou]",url,e.message);
     }
   }
-  throw lastErr||new Error("Investing.com: preço não encontrado");
-}
-
-// FONTE SECUNDÁRIA — Yahoo Finance (mesma fonte spot, JSON real-time, via proxy CORS)
-async function fetchYahooRate(pair){
-  const symbol=pair.toUpperCase()+"BRL=X";
-  const yahooBase=`https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=1m&range=1d&_=${Date.now()}`;
-  const endpoints=[
-    "https://corsproxy.io/?"+encodeURIComponent(yahooBase),
-    "https://api.allorigins.win/raw?url="+encodeURIComponent(yahooBase),
-    "https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(yahooBase),
-  ];
-  const range=RATE_RANGES[pair.toUpperCase()]||[0.01,100];
-  for(const url of endpoints){
-    try{
-      const r=await fetch(url,{cache:"no-store",signal:AbortSignal.timeout(8000)});
-      if(!r.ok)continue;
-      const d=await r.json();
-      const meta=d&&d.chart&&d.chart.result&&d.chart.result[0]&&d.chart.result[0].meta;
-      const price=meta&&meta.regularMarketPrice;
-      if(typeof price==="number"&&price>=range[0]&&price<=range[1])return price;
-    }catch(e){
-      console.warn("[Yahoo proxy falhou]",url.slice(0,40),e.message);
-    }
-  }
-  throw new Error("Yahoo Finance falhou em todos os proxies");
+  throw lastErr||new Error("Investing.com falhou em todos os hosts/proxies");
 }
 
 async function fetchLiveRates(force=false){
@@ -474,7 +440,6 @@ async function fetchLiveRates(force=false){
   const age=Date.now()-(s.rateTimestamp||0);
   const hasCache=s.usd>0&&s.cny>0&&s.eur>0&&s.rateTimestamp>0;
 
-  // Atualiza somente a cada RATE_TTL, a não ser que o usuário force.
   if(!force&&hasCache&&age<RATE_TTL){
     updateNavRateSub();
     return {usd:s.usd,eur:s.eur,cny:s.cny,source:s.rateSource,time:s.rateTime,fromCache:true};
@@ -483,7 +448,7 @@ async function fetchLiveRates(force=false){
   ST.rateLoading=true;
   updateNavRateSub();
 
-  // FONTE PRIMÁRIA — Investing.com via Jina (extração precisa do bloco da cotação)
+  // ÚNICA FONTE — Investing.com. Se falhar, mantém última cotação e mostra erro.
   try{
     const [usd,eur,cny]=await Promise.all([
       fetchInvestingRate("USD").catch(e=>{console.warn("[Investing USD]",e.message);return null;}),
@@ -506,106 +471,16 @@ async function fetchLiveRates(force=false){
       updateNavRateSub();
       return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"Investing.com",time:timeStr,fromCache:false};
     }
-    throw new Error("Investing não retornou as 3 cotações válidas");
+    throw new Error("Investing.com não retornou as 3 cotações válidas (USD/EUR/CNY)");
   }catch(e){
-    console.warn("[PriceIQ rates Investing]",e.message);
-  }
-
-  // FONTE SECUNDÁRIA — Yahoo Finance (mesma fonte spot, JSON via proxy CORS)
-  try{
-    const [usd,eur,cny]=await Promise.all([
-      fetchYahooRate("USD").catch(()=>null),
-      fetchYahooRate("EUR").catch(()=>null),
-      fetchYahooRate("CNY").catch(()=>null),
-    ]);
-    if(usd>1&&eur>1&&cny>0){
-      const now=Date.now();
-      const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
-      ST.settings={...ST.settings,
-        usd:parseFloat(usd.toFixed(4)),
-        cny:parseFloat(cny.toFixed(4)),
-        eur:parseFloat(eur.toFixed(4)),
-        rateSource:"Yahoo Finance",
-        rateTime:timeStr,
-        rateTimestamp:now
-      };
-      persist();
-      ST.rateLoading=false;
-      updateNavRateSub();
-      return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"Yahoo Finance",time:timeStr,fromCache:false};
-    }
-    throw new Error("Yahoo não retornou as 3 cotações");
-  }catch(e){
-    console.warn("[PriceIQ rates Yahoo]",e.message);
-  }
-
-  // FONTE SECUNDÁRIA — AwesomeAPI.com.br (Brasil, mid = (bid+ask)/2 para máxima precisão)
-  try{
-    const r=await fetch("https://economia.awesomeapi.com.br/json/last/USD-BRL,EUR-BRL,CNY-BRL",{cache:"no-store"});
-    const d=await r.json();
-    if(r.ok&&d&&d["USDBRL"]&&d["EURBRL"]&&d["CNYBRL"]){
-      // Mid-market = (bid+ask)/2 — mais próximo do valor "real time" da Investing
-      const midOf=p=>{const b=parseFloat(p.bid)||0,a=parseFloat(p.ask)||0;return a>0?(b+a)/2:b;};
-      const usd=midOf(d["USDBRL"]);
-      const eur=midOf(d["EURBRL"]);
-      const cny=midOf(d["CNYBRL"]);
-      if(usd>1&&eur>1&&cny>0){
-        const now=Date.now();
-        const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
-        ST.settings={...ST.settings,
-          usd:parseFloat(usd.toFixed(4)),
-          cny:parseFloat(cny.toFixed(4)),
-          eur:parseFloat(eur.toFixed(4)),
-          rateSource:"AwesomeAPI (mid)",
-          rateTime:timeStr,
-          rateTimestamp:now
-        };
-        persist();
-        ST.rateLoading=false;
-        updateNavRateSub();
-        return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"AwesomeAPI",time:timeStr,fromCache:false};
-      }
-    }
-    throw new Error("resposta inválida da AwesomeAPI");
-  }catch(e){
-    console.warn("[PriceIQ rates AwesomeAPI]",e.message);
-  }
-
-  // FONTE SECUNDÁRIA — ExchangeRate API (fallback gratuito)
-  try{
-    const r=await fetch("https://open.er-api.com/v6/latest/BRL",{cache:"no-store"});
-    const d=await r.json();
-    const rates=d&&d.rates?d.rates:null;
-    if(r.ok&&rates&&rates.USD>0&&rates.CNY>0&&rates.EUR>0){
-      const now=Date.now();
-      const usd=1/Number(rates.USD);
-      const cny=1/Number(rates.CNY);
-      const eur=1/Number(rates.EUR);
-      const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
-      ST.settings={...ST.settings,
-        usd:parseFloat(usd.toFixed(4)),
-        cny:parseFloat(cny.toFixed(4)),
-        eur:parseFloat(eur.toFixed(4)),
-        rateSource:"ExchangeRate",
-        rateTime:timeStr,
-        rateTimestamp:now
-      };
-      persist();
-      ST.rateLoading=false;
-      updateNavRateSub();
-      return{usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,source:"ExchangeRate",time:timeStr,fromCache:false};
-    }
-    throw new Error("resposta inválida da ExchangeRate");
-  }catch(e){
-    console.error("[PriceIQ rates fallback]",e.message);
+    console.error("[PriceIQ Investing falhou]",e.message);
   }
 
   ST.rateLoading=false;
   updateNavRateSub();
 
-  // Último recurso — mantém última cotação salva/manual.
   if(hasCache){
-    return{usd:s.usd,cny:s.cny,eur:s.eur,source:(s.rateSource||"cotação salva")+" (cache)",time:s.rateTime,fromCache:true,stale:true};
+    return{usd:s.usd,cny:s.cny,eur:s.eur,source:(s.rateSource||"Investing.com")+" (cache)",time:s.rateTime,fromCache:true,stale:true};
   }
   return{usd:s.usd||5.10,cny:s.cny||0.70,eur:s.eur||5.55,source:"manual",time:"—",fromCache:true,stale:true};
 }
@@ -1390,8 +1265,9 @@ async function refreshRates(){
   toast("Atualizando cotações…");
   await fetchLiveRates(true);
   renderHome();
-  if(ST.settings.usd>0)toast(`Cotação atualizada: USD ${fmt4(ST.settings.usd)}`);
-  else toast("Não foi possível atualizar. Usando última cotação salva.","err");
+  if(ST.settings.rateSource&&!ST.settings.rateSource.includes("cache")&&ST.settings.rateTimestamp>Date.now()-5000)
+    toast(`Cotação Investing atualizada: USD ${fmt4(ST.settings.usd)}`);
+  else toast("Investing.com indisponível — tente novamente em 1 minuto","err");
 }
 
 function recallQuery(idx){
@@ -1996,8 +1872,9 @@ async function refreshRatesSettings(){
   toast("Atualizando cotações…");
   await fetchLiveRates(true);
   renderSettings();
-  if(ST.settings.rateTimestamp)toast("Cotação atualizada!");
-  else toast("Não foi possível atualizar. Último valor mantido.","err");
+  if(ST.settings.rateSource&&!ST.settings.rateSource.includes("cache")&&ST.settings.rateTimestamp>Date.now()-5000)
+    toast(`Cotação Investing atualizada: USD ${fmt4(ST.settings.usd)}`);
+  else toast("Investing.com indisponível — tente novamente em 1 minuto","err");
 }
 
 function saveSettings(){
