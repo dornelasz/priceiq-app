@@ -5,14 +5,14 @@ import { supplierCreateSchema, supplierUpdateSchema, idParamSchema } from '../li
 export async function suppliersRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /api/suppliers
   fastify.get('/api/suppliers', async () => {
-    const items = await supplierService.list(null);
+    const items = await supplierService.list();
     return { items };
   });
 
   // POST /api/suppliers
   fastify.post('/api/suppliers', async (req) => {
     const body = supplierCreateSchema.parse(req.body);
-    const created = await supplierService.create(body, null);
+    const created = await supplierService.create(body);
     return created;
   });
 

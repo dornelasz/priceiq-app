@@ -13,7 +13,6 @@ export async function searchesRoutes(fastify: FastifyInstance): Promise<void> {
     const created = await searchService.create({
       query: body.query,
       supplierIds: body.supplier_ids,
-      userId: null,
     });
     reply.code(202).send(created);
     return reply;
@@ -25,7 +24,6 @@ export async function searchesRoutes(fastify: FastifyInstance): Promise<void> {
     const items = await searchService.list({
       limit: q.limit,
       offset: q.offset,
-      userId: null,
     });
     return { items, limit: q.limit, offset: q.offset };
   });

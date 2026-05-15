@@ -13,7 +13,8 @@ import { searchesRoutes } from './routes/searches.js';
 import { resultsRoutes } from './routes/results.js';
 import { ratesRoutes } from './routes/rates.js';
 import { cacheService } from './services/cacheService.js';
-import { pool } from './db/pool.js';
+import { databaseService } from './services/databaseService.js';
+import { closePool } from './db/client.js';
 
 const app = Fastify({
   logger: {
@@ -45,6 +46,8 @@ app.get('/api/health', async () => ({
   env: config.NODE_ENV,
   ts: new Date().toISOString(),
 }));
+
+app.get('/api/db/health', async () => databaseService.health());
 
 // ─── Routes ─────────────────────────────────────────────
 await app.register(suppliersRoutes);
@@ -92,7 +95,7 @@ async function shutdown(signal: string): Promise<void> {
     app.log.error({ err: e }, 'erro ao fechar fastify');
   }
   await cacheService.close().catch(() => {});
-  await pool.end().catch(() => {});
+  await closePool();
   process.exit(0);
 }
 process.on('SIGINT', () => void shutdown('SIGINT'));

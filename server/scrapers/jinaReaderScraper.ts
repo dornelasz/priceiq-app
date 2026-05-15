@@ -21,13 +21,11 @@ export interface ScrapedResult {
   link?: string;
   linkType?: 'product' | 'search';
   sellerName?: string;
-  productRating?: number;
-  productReviews?: number;
   freight?: number;
-  freightNote?: string;
-  freeShip?: boolean;
-  sourceText?: string;
+  available?: boolean;
+  warning?: string;
   confidence?: number;
+  matchScore?: number;
   errorMessage?: string;
   rawData?: unknown;
   quotaExceeded?: boolean;
@@ -90,8 +88,8 @@ async function fetchViaJina(url: string, timeoutMs: number): Promise<string> {
 }
 
 function buildSearchUrl(supplier: Supplier, query: string): string {
-  if (supplier.url_template && supplier.url_template.includes('{q}')) {
-    return supplier.url_template.replace('{q}', encodeURIComponent(query));
+  if (supplier.search_url_template && supplier.search_url_template.includes('{q}')) {
+    return supplier.search_url_template.replace('{q}', encodeURIComponent(query));
   }
   const host = supplier.site.replace(/^https?:\/\//, '').replace(/\/$/, '');
   return `https://${host}/search?q=${encodeURIComponent(query)}`;
@@ -109,7 +107,7 @@ export async function scrapeViaJinaReader(
   const searchUrl = buildSearchUrl(supplier, query);
   const siteNoWww = supplier.site.replace(/^www\./, '').toLowerCase();
 
-  const jsonTpl = `{"found":true,"productName":"nome real","price":0.00,"currency":"${supplier.currency}","link":"url","sellerName":"","productRating":0,"productReviews":0,"freight":0.00,"freightNote":"não encontrado","sourceText":"trecho do preço","confidence":80}`;
+  const jsonTpl = `{"found":true,"productName":"nome real","price":0.00,"currency":"${supplier.currency}","link":"url","sellerName":"","freight":0.00,"available":true,"warning":"","matchScore":80,"confidence":80}`;
 
   // Aplica timeout global na operação inteira
   const deadline = Date.now() + opts.timeoutMs;
@@ -183,6 +181,7 @@ ${jsonTpl}`;
       return { found: false, errorMessage: 'preço inválido', rawData: parsed };
     }
 
+    const warning = String(parsed['warning'] ?? '').trim();
     return {
       found: true,
       productName: String(parsed['productName'] ?? '').slice(0, 200) || query,
@@ -191,14 +190,10 @@ ${jsonTpl}`;
       link,
       linkType: isProductUrl(link) ? 'product' : 'search',
       sellerName: String(parsed['sellerName'] ?? '').slice(0, 200) || undefined,
-      productRating: Number(parsed['productRating']) || undefined,
-      productReviews: Number(parsed['productReviews']) || undefined,
       freight: Number(parsed['freight']) || 0,
-      freightNote: String(parsed['freightNote'] ?? 'não encontrado'),
-      freeShip: ['grátis confirmado', 'grátis', 'free'].includes(
-        String(parsed['freightNote'] ?? '').toLowerCase(),
-      ),
-      sourceText: String(parsed['sourceText'] ?? '').slice(0, 500) || undefined,
+      available: parsed['available'] === false ? false : true,
+      warning: warning || undefined,
+      matchScore: Number(parsed['matchScore']) || 75,
       confidence: Number(parsed['confidence']) || 75,
       rawData: parsed,
     };

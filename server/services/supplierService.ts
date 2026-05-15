@@ -1,25 +1,21 @@
 /**
- * CRUD de fornecedores.
- *
- * Notas:
- *  - user_id NULL = fornecedor global (Mercado Livre, Amazon, etc).
- *  - Por enquanto NÃO há autenticação — todos os fornecedores listados são
- *    globais + customizados sem owner. Etapa de auth definirá o user_id.
+ * CRUD de fornecedores — usa o schema Etapa 3.
  */
-import { query } from '../db/pool.js';
+import { query } from '../db/client.js';
 import { ConflictError, NotFoundError } from '../lib/errors.js';
 import type { SupplierCreateInput, SupplierUpdateInput } from '../lib/validators.js';
 
 export interface Supplier {
   id: string;
-  user_id: string | null;
   name: string;
   site: string;
-  url_template: string | null;
-  type: string;
+  search_url_template: string;
   country: string;
   currency: string;
-  enabled: boolean;
+  type: string;
+  active: boolean;
+  extraction_mode: string;
+  extractor_config: Record<string, unknown>;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -27,14 +23,15 @@ export interface Supplier {
 
 interface SupplierRow {
   id: string;
-  user_id: string | null;
   name: string;
   site: string;
-  url_template: string | null;
-  type: string;
+  search_url_template: string;
   country: string;
   currency: string;
-  enabled: boolean;
+  type: string;
+  active: boolean;
+  extraction_mode: string;
+  extractor_config: Record<string, unknown>;
   notes: string | null;
   created_at: Date;
   updated_at: Date;
@@ -43,19 +40,21 @@ interface SupplierRow {
 function toApi(row: SupplierRow): Supplier {
   return {
     ...row,
+    extractor_config: row.extractor_config ?? {},
     created_at: row.created_at.toISOString(),
     updated_at: row.updated_at.toISOString(),
   };
 }
 
 export const supplierService = {
-  async list(userId?: string | null): Promise<Supplier[]> {
-    // Retorna globais (user_id IS NULL) + do usuário
+  async list(): Promise<Supplier[]> {
+    const r = await query<SupplierRow>(`SELECT * FROM suppliers ORDER BY name`);
+    return r.rows.map(toApi);
+  },
+
+  async listActive(): Promise<Supplier[]> {
     const r = await query<SupplierRow>(
-      `SELECT * FROM suppliers
-       WHERE user_id IS NULL OR user_id = $1
-       ORDER BY user_id NULLS FIRST, name`,
-      [userId ?? null],
+      `SELECT * FROM suppliers WHERE active = TRUE ORDER BY name`,
     );
     return r.rows.map(toApi);
   },
@@ -66,29 +65,40 @@ export const supplierService = {
     return toApi(r.rows[0]);
   },
 
-  async create(input: SupplierCreateInput, userId?: string | null): Promise<Supplier> {
-    // Bloqueia duplicata do mesmo site/owner
+  async getManyByIds(ids: string[]): Promise<Supplier[]> {
+    if (ids.length === 0) return [];
+    const r = await query<SupplierRow>(
+      `SELECT * FROM suppliers WHERE id = ANY($1::uuid[])`,
+      [ids],
+    );
+    return r.rows.map(toApi);
+  },
+
+  async create(input: SupplierCreateInput): Promise<Supplier> {
+    // Conflito por site único
     const existing = await query<{ id: string }>(
-      `SELECT id FROM suppliers WHERE site = $1 AND (user_id = $2 OR (user_id IS NULL AND $2 IS NULL))`,
-      [input.site.toLowerCase(), userId ?? null],
+      `SELECT id FROM suppliers WHERE site = $1`,
+      [input.site.toLowerCase()],
     );
     if (existing.rowCount && existing.rowCount > 0) {
       throw new ConflictError(`Fornecedor já existe para o site ${input.site}`);
     }
 
     const r = await query<SupplierRow>(
-      `INSERT INTO suppliers (user_id, name, site, url_template, type, country, currency, enabled, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO suppliers
+         (name, site, search_url_template, country, currency, type, active, extraction_mode, extractor_config, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10)
        RETURNING *`,
       [
-        userId ?? null,
         input.name,
         input.site.toLowerCase(),
-        input.url_template ?? null,
-        input.type,
+        input.search_url_template,
         input.country,
         input.currency,
-        input.enabled,
+        input.type,
+        input.active,
+        input.extraction_mode,
+        JSON.stringify(input.extractor_config ?? {}),
         input.notes ?? null,
       ],
     );
@@ -97,20 +107,29 @@ export const supplierService = {
   },
 
   async update(id: string, patch: SupplierUpdateInput): Promise<Supplier> {
-    // Verifica existência
-    await this.get(id);
+    await this.get(id); // valida existência
 
     const fields: string[] = [];
     const values: unknown[] = [];
     let idx = 1;
-    const keys: Array<keyof SupplierUpdateInput> = [
-      'name', 'site', 'url_template', 'type', 'country', 'currency', 'enabled', 'notes',
+
+    const stringKeys: Array<keyof SupplierUpdateInput> = [
+      'name', 'site', 'search_url_template', 'country', 'currency', 'type',
+      'extraction_mode', 'notes',
     ];
-    for (const k of keys) {
+    for (const k of stringKeys) {
       const v = patch[k];
       if (v === undefined) continue;
       fields.push(`${k} = $${idx++}`);
       values.push(k === 'site' && typeof v === 'string' ? v.toLowerCase() : v);
+    }
+    if (patch.active !== undefined) {
+      fields.push(`active = $${idx++}`);
+      values.push(patch.active);
+    }
+    if (patch.extractor_config !== undefined) {
+      fields.push(`extractor_config = $${idx++}::jsonb`);
+      values.push(JSON.stringify(patch.extractor_config));
     }
 
     if (fields.length === 0) return this.get(id);

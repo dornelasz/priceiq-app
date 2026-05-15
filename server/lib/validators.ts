@@ -5,11 +5,16 @@ import { z } from 'zod';
 export const supplierCreateSchema = z.object({
   name: z.string().min(1).max(120),
   site: z.string().min(3).max(200),
-  url_template: z.string().min(3).max(500).optional().nullable(),
-  type: z.enum(['Nacional', 'Internacional']).default('Nacional'),
+  search_url_template: z.string().min(3).max(500).refine(
+    (s) => s.includes('{q}'),
+    { message: 'search_url_template precisa conter {q}' },
+  ),
   country: z.string().min(2).max(80).default('Brasil'),
   currency: z.enum(['BRL', 'USD', 'EUR', 'CNY']).default('BRL'),
-  enabled: z.boolean().default(true),
+  type: z.enum(['Nacional', 'Internacional']).default('Nacional'),
+  active: z.boolean().default(true),
+  extraction_mode: z.enum(['jina_reader', 'playwright', 'direct_api']).default('jina_reader'),
+  extractor_config: z.record(z.string(), z.unknown()).default({}),
   notes: z.string().max(500).optional().nullable(),
 });
 export type SupplierCreateInput = z.infer<typeof supplierCreateSchema>;

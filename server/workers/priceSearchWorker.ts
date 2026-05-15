@@ -1,10 +1,10 @@
 /**
- * Worker em processo — executa scrapers em paralelo com limite de concorrência.
+ * Worker in-process — executa scrapers em paralelo com limite de concorrência.
  *
  * Garantias:
  *  - Cada fornecedor tem timeout individual (SUPPLIER_TIMEOUT_MS).
  *  - Se um fornecedor falha, os outros continuam.
- *  - Toda falha é registrada em search_results com error_message.
+ *  - Toda falha vai pra search_results.error_message (não fica só em log).
  *  - Status da busca evolui pending → running → completed.
  */
 import { config } from '../config.js';
@@ -79,16 +79,13 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
 
   await withConcurrency(suppliers, config.SEARCH_CONCURRENCY, async (sup) => {
     if (quotaTripped) {
-      // Quota Gemini esgotada — registra como skip
       await searchService.insertResult(searchId, sup, {
         found: false,
         errorMessage: 'Pulado — quota Gemini esgotada em fornecedor anterior',
       }).catch(() => {});
-      await searchService.incrementCompleted(searchId).catch(() => {});
       return;
     }
 
-    const startedAt = Date.now();
     let result: ScrapedResult;
     try {
       result = await applyTimeout(
@@ -97,57 +94,46 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
         sup.name,
       );
     } catch (e) {
-      result = {
-        found: false,
-        errorMessage: (e as Error).message,
-      };
+      result = { found: false, errorMessage: (e as Error).message };
     }
 
     if (result.quotaExceeded) quotaTripped = true;
 
-    const durationMs = Date.now() - startedAt;
-
     try {
-      if (result.found && result.price && result.currency) {
-        const priceBrl = await searchService.convertToBrl(result.price, result.currency);
+      if (result.found && result.price !== undefined && result.currency) {
+        const { brl, rate } = await searchService.convertToBrl(result.price, result.currency);
         const freight = result.freight ?? 0;
-        const totalBrl = parseFloat((priceBrl + freight * (priceBrl / result.price)).toFixed(4));
+        const totalPrice = parseFloat((result.price + freight).toFixed(4));
+        const totalBrl =
+          rate > 0
+            ? parseFloat((totalPrice * rate).toFixed(4))
+            : brl; // sem rate (BRL), brl == price; some freight de qualquer forma
         await searchService.insertResult(searchId, sup, {
           found: true,
           productName: result.productName,
-          price: result.price,
-          currency: result.currency,
-          priceBrl,
-          link: result.link,
-          linkType: result.linkType,
           sellerName: result.sellerName,
-          productRating: result.productRating,
-          productReviews: result.productReviews,
-          freight: result.freight,
-          freightNote: result.freightNote,
-          freeShip: result.freeShip,
+          price: result.price,
+          freight,
+          totalPrice,
+          currency: result.currency,
+          exchangeRateUsed: rate || undefined,
           totalBrl,
+          productUrl: result.link,
+          matchScore: result.matchScore,
           confidence: result.confidence,
-          sourceText: result.sourceText,
-          rawData: result.rawData,
-          durationMs,
+          available: result.available,
+          warning: result.warning,
+          fromCache: false,
         });
       } else {
         await searchService.insertResult(searchId, sup, {
           found: false,
           errorMessage: result.errorMessage ?? 'produto não encontrado',
-          rawData: result.rawData,
-          durationMs,
+          fromCache: false,
         });
       }
     } catch (e) {
       console.error('[worker] insertResult falhou', sup.name, e);
-    }
-
-    try {
-      await searchService.incrementCompleted(searchId);
-    } catch (e) {
-      console.error('[worker] incrementCompleted falhou', e);
     }
   });
 

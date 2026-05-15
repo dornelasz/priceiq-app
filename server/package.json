@@ -9,7 +9,10 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "db:seed": "tsx db/seed.ts"
+    "db:setup": "tsx db/migrate-cli.ts",
+    "db:migrate": "tsx db/migrate-cli.ts",
+    "db:seed": "tsx db/seed.ts",
+    "db:reset": "tsx db/reset-cli.ts"
   },
   "dependencies": {
     "@fastify/cors": "^9.0.1",

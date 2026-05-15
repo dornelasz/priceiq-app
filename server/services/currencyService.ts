@@ -10,7 +10,7 @@
  * intacta — é o estado estável validado pelo usuário.
  */
 import { config } from '../config.js';
-import { query } from '../db/pool.js';
+import { query } from '../db/client.js';
 import { cacheService } from './cacheService.js';
 
 export type Pair = 'USD' | 'EUR' | 'CNY';
@@ -114,8 +114,8 @@ async function fetchOne(pair: Pair): Promise<number> {
 async function persistRate(pair: Pair, value: number): Promise<void> {
   try {
     await query(
-      `INSERT INTO currency_rates (pair, value, source) VALUES ($1, $2, $3)`,
-      [`${pair}-BRL`, value, 'Investing.com'],
+      `INSERT INTO exchange_rates (currency, brl_rate, source) VALUES ($1, $2, $3)`,
+      [pair, value, 'Investing.com'],
     );
   } catch (e) {
     console.warn('[currency] não foi possível persistir cotação:', (e as Error).message);
@@ -183,17 +183,17 @@ export const currencyService = {
     return payload;
   },
 
-  async getHistory(pair: Pair, limit = 50): Promise<Array<{ value: number; fetched_at: string }>> {
-    const r = await query<{ value: string; fetched_at: Date }>(
-      `SELECT value, fetched_at FROM currency_rates
-       WHERE pair = $1
-       ORDER BY fetched_at DESC
+  async getHistory(pair: Pair, limit = 50): Promise<Array<{ value: number; collected_at: string }>> {
+    const r = await query<{ brl_rate: string; collected_at: Date }>(
+      `SELECT brl_rate, collected_at FROM exchange_rates
+       WHERE currency = $1
+       ORDER BY collected_at DESC
        LIMIT $2`,
-      [`${pair}-BRL`, limit],
+      [pair, limit],
     );
     return r.rows.map((row) => ({
-      value: parseFloat(row.value),
-      fetched_at: row.fetched_at.toISOString(),
+      value: parseFloat(row.brl_rate),
+      collected_at: row.collected_at.toISOString(),
     }));
   },
 };
