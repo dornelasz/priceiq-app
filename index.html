@@ -381,6 +381,55 @@ const RATE_RANGES={
   CNY:[0.3,2.0],
 };
 
+// Parse robusto de número Investing (BR ou EN-US)
+function parseInvestingNum(raw){
+  if(!raw)return NaN;
+  raw=String(raw).trim();
+  if(raw.includes(",")&&raw.includes(".")){
+    const lc=raw.lastIndexOf(","),ld=raw.lastIndexOf(".");
+    if(lc>ld)return parseFloat(raw.replace(/\./g,"").replace(",","."));
+    return parseFloat(raw.replace(/,/g,""));
+  }
+  if(raw.includes(","))return parseFloat(raw.replace(",","."));
+  return parseFloat(raw);
+}
+
+// Tira scripts/styles/tags do HTML, devolve texto visível
+function cleanVisibleText(html){
+  if(!html)return"";
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi," ")
+    .replace(/<style[\s\S]*?<\/style>/gi," ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi," ")
+    .replace(/<[^>]+>/g," ")
+    .replace(/&nbsp;/gi," ").replace(/&amp;/gi,"&")
+    .replace(/&lt;/gi,"<").replace(/&gt;/gi,">")
+    .replace(/&#39;/gi,"'").replace(/&quot;/gi,'"')
+    .replace(/\s+/g," ").trim();
+}
+
+// Fallback de texto visível p/ Investing (crítico p/ USD quando DOM não vem)
+// Aplica sanity range — descarta números fora da faixa esperada
+function extractPriceFromVisibleText(html,range,pair){
+  if(!html)return null;
+  const text=cleanVisibleText(html);
+  if(text.length<30)return null;
+  const slash=pair.toUpperCase()+"\\/BRL";
+  const patterns=[
+    new RegExp("current\\s+"+slash+"\\s+exchange\\s+rate\\s+is\\s+([\\d.,]+)","i"),
+    new RegExp("bid\\s+price\\s+is\\s+([\\d.,]+)\\s+and\\s+the\\s+ask\\s+price\\s+is\\s+[\\d.,]+\\s+for\\s+"+slash,"i"),
+    new RegExp(slash+"[\\s\\S]{0,260}?Real-time\\s+Currencies[\\s\\S]{0,180}?(\\d+[.,]\\d{3,6})","i"),
+    new RegExp("Real-time\\s+Currencies[\\s\\S]{0,260}?"+slash+"[\\s\\S]{0,120}?(\\d+[.,]\\d{3,6})","i"),
+  ];
+  for(const p of patterns){
+    const m=text.match(p);
+    if(!m||!m[1])continue;
+    const num=parseInvestingNum(m[1]);
+    if(num>=range[0]&&num<=range[1])return num;
+  }
+  return null;
+}
+
 async function fetchInvestingRate(pair){
   const slug=pair.toLowerCase()+"-brl";
   const range=RATE_RANGES[pair.toUpperCase()]||[0.01,100];
@@ -403,28 +452,23 @@ async function fetchInvestingRate(pair){
         const r=await fetch(proxyUrl,{cache:"no-store",signal:AbortSignal.timeout(6000)});
         if(!r.ok)throw new Error("HTTP "+r.status);
         const html=await r.text();
-        const patterns=[
+        // 1) Parser DOM/JSON (preciso quando o conteúdo é completo)
+        const domPatterns=[
           /data-test=["']instrument-price-last["'][^>]*>\s*([\d.,]+)\s*</i,
           /"last":\s*"?([\d.]+)"?\s*[,}]/,
           /"regularMarketPrice":\s*([\d.]+)/,
           /"last_close":\s*"?([\d.]+)"?/,
         ];
-        for(const p of patterns){
+        for(const p of domPatterns){
           const m=html.match(p);
           if(!m)continue;
-          let raw=m[1];
-          let num;
-          if(raw.includes(",")&&raw.includes(".")){
-            const lc=raw.lastIndexOf(","),ld=raw.lastIndexOf(".");
-            if(lc>ld)num=parseFloat(raw.replace(/\./g,"").replace(",","."));
-            else num=parseFloat(raw.replace(/,/g,""));
-          } else if(raw.includes(",")){
-            num=parseFloat(raw.replace(",","."));
-          } else {
-            num=parseFloat(raw);
-          }
+          const num=parseInvestingNum(m[1]);
           if(num>=range[0]&&num<=range[1])return num;
         }
+        // 2) Fallback texto visível — pega frases descritivas que sobrevivem
+        //    quando os proxies retornam HTML estático. Crítico p/ USD/BRL.
+        const fromText=extractPriceFromVisibleText(html,range,pair);
+        if(fromText!==null)return fromText;
         throw new Error("preço não encontrado em "+host);
       })());
     }
@@ -447,11 +491,14 @@ async function fetchLiveRates(force=false){
   updateNavRateSub();
 
   // ÚNICA FONTE — Investing.com. Atualização PARCIAL aceita: se 1 ou 2 das 3
-  // moedas falharem, atualiza as que vieram e mantém cache nas outras.
+  // moedas falharem, atualiza as que vieram e mantém o último valor das outras.
+  // IMPORTANTE: cada moeda tem timestamp/source/warning próprio — não marca
+  // USD como "atualizado pela Investing" se a Investing não devolveu USD.
+  const usdErr={msg:null};const eurErr={msg:null};const cnyErr={msg:null};
   const [usd,eur,cny]=await Promise.all([
-    fetchInvestingRate("USD").catch(e=>{console.warn("[Investing USD]",e.message);return null;}),
-    fetchInvestingRate("EUR").catch(e=>{console.warn("[Investing EUR]",e.message);return null;}),
-    fetchInvestingRate("CNY").catch(e=>{console.warn("[Investing CNY]",e.message);return null;}),
+    fetchInvestingRate("USD").catch(e=>{usdErr.msg=e.message;console.warn("[Investing USD]",e.message);return null;}),
+    fetchInvestingRate("EUR").catch(e=>{eurErr.msg=e.message;console.warn("[Investing EUR]",e.message);return null;}),
+    fetchInvestingRate("CNY").catch(e=>{cnyErr.msg=e.message;console.warn("[Investing CNY]",e.message);return null;}),
   ]);
 
   const okUsd=usd>1, okEur=eur>1, okCny=cny>0;
@@ -460,13 +507,29 @@ async function fetchLiveRates(force=false){
   if(anyOk){
     const now=Date.now();
     const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
+    // Warnings/sources POR MOEDA — usuário sabe quando USD ficou no manual
+    const usdWarning=okUsd?null:`USD automático falhou (${usdErr.msg||"sem detalhe"}); usando último valor salvo`;
+    const eurWarning=okEur?null:`EUR automático falhou (${eurErr.msg||"sem detalhe"}); usando último valor salvo`;
+    const cnyWarning=okCny?null:`CNY automático falhou (${cnyErr.msg||"sem detalhe"}); usando último valor salvo`;
     ST.settings={...ST.settings,
       usd: okUsd?parseFloat(usd.toFixed(4)):(s.usd||5.10),
       eur: okEur?parseFloat(eur.toFixed(4)):(s.eur||5.55),
       cny: okCny?parseFloat(cny.toFixed(4)):(s.cny||0.70),
+      // Compat: rateSource/rateTime/rateTimestamp existem como antes
       rateSource:"Investing.com",
       rateTime:timeStr,
-      rateTimestamp:now
+      rateTimestamp:now,
+      // Per-currency: usuário/UI consegue distinguir o que de fato atualizou
+      usdRateSource: okUsd?"Investing.com":(s.usdRateSource||s.rateSource||"manual-fallback"),
+      eurRateSource: okEur?"Investing.com":(s.eurRateSource||s.rateSource||"manual-fallback"),
+      cnyRateSource: okCny?"Investing.com":(s.cnyRateSource||s.rateSource||"manual-fallback"),
+      usdRateTime: okUsd?timeStr:(s.usdRateTime||s.rateTime||"—"),
+      eurRateTime: okEur?timeStr:(s.eurRateTime||s.rateTime||"—"),
+      cnyRateTime: okCny?timeStr:(s.cnyRateTime||s.rateTime||"—"),
+      usdRateTimestamp: okUsd?now:(s.usdRateTimestamp||s.rateTimestamp||0),
+      eurRateTimestamp: okEur?now:(s.eurRateTimestamp||s.rateTimestamp||0),
+      cnyRateTimestamp: okCny?now:(s.cnyRateTimestamp||s.rateTimestamp||0),
+      usdWarning,eurWarning,cnyWarning,
     };
     persist();
     ST.rateLoading=false;
@@ -475,7 +538,8 @@ async function fetchLiveRates(force=false){
       usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,
       source:"Investing.com",time:timeStr,
       fromCache:false,
-      partial:!(okUsd&&okEur&&okCny)
+      partial:!(okUsd&&okEur&&okCny),
+      warnings:{usd:usdWarning,eur:eurWarning,cny:cnyWarning},
     };
   }
 
@@ -483,9 +547,15 @@ async function fetchLiveRates(force=false){
   ST.rateLoading=false;
   updateNavRateSub();
   if(hasCache){
-    return{usd:s.usd,cny:s.cny,eur:s.eur,source:s.rateSource||"Investing.com",time:s.rateTime,fromCache:true,stale:true};
+    return{usd:s.usd,cny:s.cny,eur:s.eur,source:s.rateSource||"Investing.com",time:s.rateTime,fromCache:true,stale:true,
+      warnings:{
+        usd:`USD automático falhou (${usdErr.msg||"sem detalhe"}); usando último valor salvo`,
+        eur:`EUR automático falhou (${eurErr.msg||"sem detalhe"}); usando último valor salvo`,
+        cny:`CNY automático falhou (${cnyErr.msg||"sem detalhe"}); usando último valor salvo`,
+      }};
   }
-  return{usd:s.usd||5.10,cny:s.cny||0.70,eur:s.eur||5.55,source:"manual",time:"—",fromCache:true,stale:true};
+  return{usd:s.usd||5.10,cny:s.cny||0.70,eur:s.eur||5.55,source:"manual",time:"—",fromCache:true,stale:true,
+    warnings:{usd:"Sem cotação automática para USD",eur:"Sem cotação automática para EUR",cny:"Sem cotação automática para CNY"}};
 }
 
 function updateNavRateSub(){

@@ -69,6 +69,70 @@ function extractPriceFromHtml(html: string, range: [number, number]): number | n
   return null;
 }
 
+/**
+ * Limpa HTML para texto visível: tira scripts, styles, tags e normaliza espaços.
+ * Usado pelo fallback de texto da Investing — quando o DOM não renderiza
+ * (proxies retornam HTML estático), a página ainda contém frases descritivas
+ * como "The current USD/BRL exchange rate is X.XXXX" que conseguem ser extraídas.
+ */
+function cleanVisibleText(html: string): string {
+  if (!html) return '';
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Fallback de texto visível para Investing.com — pega frases descritivas que
+ * aparecem mesmo quando o DOM não foi renderizado pelos proxies.
+ *
+ * Padrões cobertos:
+ *  1. "The current USD/BRL exchange rate is 5.0696"
+ *  2. "bid price is 5.0686 and the ask price is 5.0707 for USD/BRL"
+ *  3. Bloco "USD/BRL ... Real-time Currencies ... <preço>"
+ *
+ * Aplica sanity range — números fora da faixa esperada são rejeitados.
+ */
+export function extractPriceFromVisibleText(
+  html: string,
+  range: [number, number],
+  pair: Pair,
+): number | null {
+  if (!html) return null;
+  const text = cleanVisibleText(html);
+  if (text.length < 30) return null;
+
+  const slash = `${pair}\\/BRL`;
+  const patterns: RegExp[] = [
+    // "The current USD/BRL exchange rate is 5.0696"
+    new RegExp(`current\\s+${slash}\\s+exchange\\s+rate\\s+is\\s+([\\d.,]+)`, 'i'),
+    // "bid price is X.XXXX and the ask price is Y.YYYY for USD/BRL"
+    new RegExp(`bid\\s+price\\s+is\\s+([\\d.,]+)\\s+and\\s+the\\s+ask\\s+price\\s+is\\s+[\\d.,]+\\s+for\\s+${slash}`, 'i'),
+    // "USD/BRL ... Real-time Currencies ... <número>"
+    new RegExp(`${slash}[\\s\\S]{0,260}?Real-time\\s+Currencies[\\s\\S]{0,180}?(\\d+[.,]\\d{3,6})`, 'i'),
+    // "Real-time Currencies ... USD/BRL ... <número>"
+    new RegExp(`Real-time\\s+Currencies[\\s\\S]{0,260}?${slash}[\\s\\S]{0,120}?(\\d+[.,]\\d{3,6})`, 'i'),
+  ];
+
+  for (const p of patterns) {
+    const m = text.match(p);
+    if (!m || !m[1]) continue;
+    const num = parseInvestingNumber(m[1]);
+    if (num >= range[0] && num <= range[1]) return num;
+  }
+  return null;
+}
+
 async function fetchAwesomeRates(): Promise<Partial<Record<Pair, number>>> {
   const url = 'https://economia.awesomeapi.com.br/json/last/USD-BRL,EUR-BRL,CNY-BRL';
   const r = await fetch(url, { headers: { Accept: 'application/json' } });
@@ -112,9 +176,15 @@ async function fetchOneInvesting(pair: Pair): Promise<number> {
           });
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           const html = await r.text();
-          const num = extractPriceFromHtml(html, range);
-          if (num === null) throw new Error('preço não encontrado');
-          return num;
+          // 1) Parser DOM/JSON (rápido e preciso quando o conteúdo é completo)
+          const fromDom = extractPriceFromHtml(html, range);
+          if (fromDom !== null) return fromDom;
+          // 2) Fallback de texto visível — pega frases descritivas que aparecem
+          //    mesmo quando o DOM não foi renderizado. Crítico p/ USD/BRL,
+          //    cuja página tende a vir mais estática nos proxies.
+          const fromText = extractPriceFromVisibleText(html, range, pair);
+          if (fromText !== null) return fromText;
+          throw new Error('preço não encontrado');
         } finally { clearTimeout(timer); }
       })());
     }
