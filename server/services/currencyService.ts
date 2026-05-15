@@ -10,15 +10,7 @@ const RATE_RANGES: Record<Pair, [number, number]> = {
   CNY: [0.3, 2.0],
 };
 
-interface CurrencyRateDetail {
-  currency: Pair;
-  brl_rate: number | null;
-  source: string;
-  collected_at: string;
-  is_manual: boolean;
-  manual_rate: number | null;
-  warning: string | null;
-}
+const SOURCE = 'Investing.com';
 
 interface RatesPayload {
   usd: number | null;
@@ -28,12 +20,7 @@ interface RatesPayload {
   fetched_at: string;
   from_cache: boolean;
   partial?: boolean;
-  details: Record<Pair, CurrencyRateDetail>;
-}
-
-interface ManualRatesSettings {
-  manual_mode?: boolean;
-  rates?: Partial<Record<Pair, number>>;
+  warnings: Record<Pair, string | null>;
 }
 
 const CACHE_KEY = 'rates:current';
@@ -59,7 +46,6 @@ function extractPriceFromHtml(html: string, range: [number, number]): number | n
     /"last":\s*"?([\d.]+)"?\s*[,}]/,
     /"regularMarketPrice":\s*([\d.]+)/,
     /"last_close":\s*"?([\d.]+)"?/,
-    // Padrões adicionais usados em /historical-data, /technical, /streaming-chart
     /pid-\d+-last[^>]*>\s*([\d.,]+)\s*</i,
     /id=["']last_last["'][^>]*>\s*([\d.,]+)\s*</i,
     /class=["'][^"']*text-2xl[^"']*["'][^>]*>\s*([\d.,]+)\s*</i,
@@ -75,12 +61,6 @@ function extractPriceFromHtml(html: string, range: [number, number]): number | n
   return null;
 }
 
-/**
- * Limpa HTML para texto visível: tira scripts, styles, tags e normaliza espaços.
- * Usado pelo fallback de texto da Investing — quando o DOM não renderiza
- * (proxies retornam HTML estático), a página ainda contém frases descritivas
- * como "The current USD/BRL exchange rate is X.XXXX" que conseguem ser extraídas.
- */
 function cleanVisibleText(html: string): string {
   if (!html) return '';
   return html
@@ -98,17 +78,6 @@ function cleanVisibleText(html: string): string {
     .trim();
 }
 
-/**
- * Fallback de texto visível para Investing.com — pega frases descritivas que
- * aparecem mesmo quando o DOM não foi renderizado pelos proxies.
- *
- * Padrões cobertos:
- *  1. "The current USD/BRL exchange rate is 5.0696"
- *  2. "bid price is 5.0686 and the ask price is 5.0707 for USD/BRL"
- *  3. Bloco "USD/BRL ... Real-time Currencies ... <preço>"
- *
- * Aplica sanity range — números fora da faixa esperada são rejeitados.
- */
 export function extractPriceFromVisibleText(
   html: string,
   range: [number, number],
@@ -120,13 +89,9 @@ export function extractPriceFromVisibleText(
 
   const slash = `${pair}\\/BRL`;
   const patterns: RegExp[] = [
-    // "The current USD/BRL exchange rate is 5.0696"
     new RegExp(`current\\s+${slash}\\s+exchange\\s+rate\\s+is\\s+([\\d.,]+)`, 'i'),
-    // "bid price is X.XXXX and the ask price is Y.YYYY for USD/BRL"
     new RegExp(`bid\\s+price\\s+is\\s+([\\d.,]+)\\s+and\\s+the\\s+ask\\s+price\\s+is\\s+[\\d.,]+\\s+for\\s+${slash}`, 'i'),
-    // "USD/BRL ... Real-time Currencies ... <número>"
     new RegExp(`${slash}[\\s\\S]{0,260}?Real-time\\s+Currencies[\\s\\S]{0,180}?(\\d+[.,]\\d{3,6})`, 'i'),
-    // "Real-time Currencies ... USD/BRL ... <número>"
     new RegExp(`Real-time\\s+Currencies[\\s\\S]{0,260}?${slash}[\\s\\S]{0,120}?(\\d+[.,]\\d{3,6})`, 'i'),
   ];
 
@@ -139,30 +104,9 @@ export function extractPriceFromVisibleText(
   return null;
 }
 
-async function fetchAwesomeRates(): Promise<Partial<Record<Pair, number>>> {
-  const url = 'https://economia.awesomeapi.com.br/json/last/USD-BRL,EUR-BRL,CNY-BRL';
-  const r = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!r.ok) throw new Error(`AwesomeAPI HTTP ${r.status}`);
-  const json = await r.json() as Record<string, { bid?: string }>;
-  const parsePair = (k: string, range: [number, number]): number | null => {
-    const value = parseFloat(json[k]?.bid ?? '');
-    if (!Number.isFinite(value)) return null;
-    if (value < range[0] || value > range[1]) return null;
-    return value;
-  };
-  return {
-    USD: parsePair('USDBRL', RATE_RANGES.USD) ?? undefined,
-    EUR: parsePair('EURBRL', RATE_RANGES.EUR) ?? undefined,
-    CNY: parsePair('CNYBRL', RATE_RANGES.CNY) ?? undefined,
-  };
-}
-
 async function fetchOneInvesting(pair: Pair): Promise<number> {
   const slug = pair.toLowerCase() + '-brl';
   const range = RATE_RANGES[pair];
-  // 6 hosts — Investing tem várias páginas para o mesmo par. USD/BRL é
-  // o par mais acessado; cache dos proxies satura nele. Mais variações
-  // = mais chance de cache miss em alguma combinação.
   const hosts = [
     `https://www.investing.com/currencies/${slug}`,
     `https://br.investing.com/currencies/${slug}`,
@@ -171,7 +115,6 @@ async function fetchOneInvesting(pair: Pair): Promise<number> {
     `https://www.investing.com/currencies/${slug}-technical`,
     `https://www.investing.com/currencies/${slug}-streaming-chart`,
   ];
-  // 5 proxies — server-side podemos usar direto (sem proxy) também
   const proxies: Array<(u: string) => string> = [
     (u) => u,
     (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
@@ -199,10 +142,8 @@ async function fetchOneInvesting(pair: Pair): Promise<number> {
             throw new Error(`HTTP ${r.status}`);
           }
           const html = await r.text();
-          // 1) Parser DOM/JSON (rápido e preciso)
           const fromDom = extractPriceFromHtml(html, range);
           if (fromDom !== null) return fromDom;
-          // 2) Fallback texto visível (crítico p/ USD/BRL)
           const fromText = extractPriceFromVisibleText(html, range, pair);
           if (fromText !== null) return fromText;
           failures.push(`${pair} ${host.split('/').pop()} → HTML sem preço (${html.length}b)`);
@@ -218,31 +159,31 @@ async function fetchOneInvesting(pair: Pair): Promise<number> {
   });
 }
 
-async function fetchAutoForPair(pair: Pair, awesomeRates: Partial<Record<Pair, number>>): Promise<{ value: number | null; source: string | null; warning: string | null }> {
-  const awesome = awesomeRates[pair];
-  if (typeof awesome === 'number') return { value: awesome, source: 'AwesomeAPI', warning: null };
+async function persistRate(pair: Pair, value: number): Promise<void> {
   try {
-    const investing = await fetchOneInvesting(pair);
-    return { value: investing, source: 'Investing.com', warning: 'AwesomeAPI indisponível; fallback automático via Investing.com' };
-  } catch (e) {
-    return { value: null, source: null, warning: `Falha na atualização automática (${(e as Error).message})` };
-  }
-}
-
-async function persistRate(pair: Pair, value: number, source: string): Promise<void> {
-  try {
-    await query(`INSERT INTO exchange_rates (currency, brl_rate, source) VALUES ($1, $2, $3)`, [pair, value, source]);
+    await query(`INSERT INTO exchange_rates (currency, brl_rate, source) VALUES ($1, $2, $3)`, [pair, value, SOURCE]);
   } catch (e) {
     console.warn('[currency] não foi possível persistir cotação:', (e as Error).message);
   }
 }
 
-async function getManualSettings(): Promise<ManualRatesSettings> {
+async function getLastAutoRate(pair: Pair): Promise<{ value: number; collected_at: string } | null> {
   try {
-    const r = await query<{ value: unknown }>('SELECT value FROM app_settings WHERE key = $1 LIMIT 1', ['rates_manual']);
-    return (r.rows[0]?.value as ManualRatesSettings | undefined) ?? {};
+    const r = await query<{ brl_rate: string; collected_at: Date }>(
+      `SELECT brl_rate, collected_at FROM exchange_rates
+       WHERE currency = $1 AND source = $2
+       ORDER BY collected_at DESC LIMIT 1`,
+      [pair, SOURCE],
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    const v = parseFloat(row.brl_rate);
+    if (!Number.isFinite(v)) return null;
+    const range = RATE_RANGES[pair];
+    if (v < range[0] || v > range[1]) return null;
+    return { value: v, collected_at: row.collected_at.toISOString() };
   } catch {
-    return {};
+    return null;
   }
 }
 
@@ -253,73 +194,43 @@ export const currencyService = {
       if (cached) return { ...cached, from_cache: true };
     }
 
-    const manual = await getManualSettings();
-    const awesomeRates = await fetchAwesomeRates().catch(() => ({}));
     const now = new Date().toISOString();
-
-    const entries = await Promise.all((['USD', 'EUR', 'CNY'] as Pair[]).map(async (pair) => {
-      const auto = await fetchAutoForPair(pair, awesomeRates);
-      const manualRate = manual.rates?.[pair] ?? null;
-      if (auto.value !== null) {
-        void persistRate(pair, auto.value, auto.source ?? 'auto');
-        return [pair, {
-          currency: pair,
-          brl_rate: auto.value,
-          source: auto.source ?? 'auto',
-          collected_at: now,
-          is_manual: false,
-          manual_rate: manualRate,
-          warning: auto.warning,
-        } satisfies CurrencyRateDetail] as const;
-      }
-      if (typeof manualRate === 'number') {
-        return [pair, {
-          currency: pair,
-          brl_rate: manualRate,
-          source: 'manual-fallback',
-          collected_at: now,
-          is_manual: true,
-          manual_rate: manualRate,
-          warning: auto.warning,
-        } satisfies CurrencyRateDetail] as const;
-      }
-      return [pair, {
-        currency: pair,
-        brl_rate: null,
-        source: 'unavailable',
-        collected_at: now,
-        is_manual: false,
-        manual_rate: manualRate,
-        warning: auto.warning,
-      } satisfies CurrencyRateDetail] as const;
-    }));
-
-    const details = Object.fromEntries(entries) as Record<Pair, CurrencyRateDetail>;
-
-    if (manual.manual_mode) {
-      for (const pair of ['USD', 'EUR', 'CNY'] as Pair[]) {
-        const value = manual.rates?.[pair];
-        if (typeof value === 'number') {
-          details[pair] = {
-            ...details[pair],
-            brl_rate: value,
-            source: 'manual-mode',
-            is_manual: true,
-            warning: details[pair].warning ?? 'Modo manual ativo para esta moeda',
+    const pairs: Pair[] = ['USD', 'EUR', 'CNY'];
+    const results = await Promise.all(pairs.map(async (pair) => {
+      try {
+        const value = await fetchOneInvesting(pair);
+        void persistRate(pair, value);
+        return { pair, value, warning: null as string | null };
+      } catch (e) {
+        const last = await getLastAutoRate(pair);
+        if (last) {
+          return {
+            pair,
+            value: last.value,
+            warning: `Investing.com indisponível para ${pair}/BRL — exibindo último valor automático (${new Date(last.collected_at).toLocaleTimeString('pt-BR')})`,
           };
         }
+        return { pair, value: null as number | null, warning: `Investing.com indisponível para ${pair}/BRL (${(e as Error).message})` };
       }
-    }
+    }));
+
+    const byPair = Object.fromEntries(results.map((r) => [r.pair, r])) as Record<Pair, typeof results[number]>;
+    const warnings: Record<Pair, string | null> = {
+      USD: byPair.USD.warning,
+      EUR: byPair.EUR.warning,
+      CNY: byPair.CNY.warning,
+    };
+    const partial = pairs.some((p) => byPair[p].warning !== null);
 
     const payload: RatesPayload = {
-      usd: details.USD.brl_rate,
-      eur: details.EUR.brl_rate,
-      cny: details.CNY.brl_rate,
-      source: 'multi-source',
+      usd: byPair.USD.value,
+      eur: byPair.EUR.value,
+      cny: byPair.CNY.value,
+      source: SOURCE,
       fetched_at: now,
       from_cache: false,
-      partial: [details.USD, details.EUR, details.CNY].some((x) => !!x.warning),
-      details,
+      partial,
+      warnings,
     };
 
     await cacheService.setJson(CACHE_KEY, payload, config.RATES_CACHE_TTL_SECONDS);

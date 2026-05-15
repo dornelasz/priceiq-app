@@ -78,12 +78,22 @@ npm run dev                # http://localhost:3000
 | Scrapers específicos (ML/Amazon/Shopee/Magalu/AliExpress) | Motor primário — URL otimizada por marketplace |
 | Jina Reader + extração direta (regex) | Pipeline default — sem IA |
 | Cache de resultados por fornecedor | Evita buscas repetidas |
-| Cotação Investing.com (Promise.any × 9 tentativas) | Conversão BRL — sem IA |
+| Cotação Investing.com (Promise.any × 30 tentativas, fonte única) | Conversão BRL — sem IA |
 | Validação de URL (`urlValidator`) | Bloqueia produto fantasma |
 | Playwright | Fallback quando Jina é bloqueado (451/403) |
 | **Gemini** | **OPCIONAL** — interpretador de texto JÁ coletado, nunca fonte primária |
 
 Por padrão, **`GEMINI_ENABLED=false`**. Se Gemini estiver ligado e a quota acabar, a busca **segue funcionando** com extração direta — uma observação discreta avisa que a IA está indisponível.
+
+## Cotação automática
+
+- A cotação usa **somente Investing.com** (USD/BRL, EUR/BRL, CNY/BRL).
+- Atualiza a cada **1 minuto** (cache TTL = 60s).
+- Cada moeda tem status independente: se USD falhar mas EUR/CNY funcionarem, EUR/CNY atualizam e USD mantém o último valor automático salvo, com aviso discreto.
+- O botão **Atualizar cotação agora** força nova busca na Investing (ignora cache).
+- **Manual foi removido** — não há mais inputs de cotação manual em nenhuma interface.
+- **AwesomeAPI não é usada** — fonte única é Investing.
+- **Gemini não é usado para cotação** — IA é apenas interpretador opcional para preços.
 
 Gemini NUNCA:
 - pesquisa sozinho
@@ -93,7 +103,7 @@ Gemini NUNCA:
 
 ## Regras invioláveis
 
-- ❌ **Não alterar** a lógica de cotação Investing.com — algoritmo Promise.any com 9 tentativas está estável
+- ❌ **Não alterar** a fonte da cotação — Investing.com é única; não usar AwesomeAPI, IA ou cotação manual
 - ❌ **Não redesenhar** a UI — visual de `index.html` é a fonte da verdade
 - ❌ **Gemini é opcional e roda apenas no backend** — chave em `server/.env`, nunca no frontend
 - ❌ **Não inventar preço** — `urlValidator` + extração direta rejeitam resultados sem evidência

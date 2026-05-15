@@ -53,7 +53,7 @@ export default function RateBar() {
     <div className="rate-bar">
       <div>
         <p style={{ color: '#4A5568', fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.4px', marginBottom: 3 }}>
-          Cotação {rates?.source ?? '—'}
+          Cotação Investing.com
         </p>
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
           <span style={{ color: '#E8F0FE', fontSize: 13, fontWeight: 600 }}>

@@ -57,13 +57,13 @@ export default function SettingsPage() {
             💱 Cotação ao vivo
           </p>
           <div className="g3" style={{ marginBottom: 14 }}>
-            <RateBox label="USD/BRL" value={rates?.usd} />
-            <RateBox label="CNY/BRL" value={rates?.cny} />
-            <RateBox label="EUR/BRL" value={rates?.eur} />
+            <RateBox label="USD/BRL" value={rates?.usd} warning={rates?.warnings?.usd} />
+            <RateBox label="CNY/BRL" value={rates?.cny} warning={rates?.warnings?.cny} />
+            <RateBox label="EUR/BRL" value={rates?.eur} warning={rates?.warnings?.eur} />
           </div>
           <p style={{ color: stale ? '#FFB800' : '#4A5568', fontSize: 12, marginBottom: 12 }}>
             {stale ? '⚠️ Cotação desatualizada · ' : ''}
-            Fonte: {rates?.source ?? '—'} · Última atualização: {rates?.fetched_at ? new Date(rates.fetched_at).toLocaleTimeString('pt-BR') : '—'} ({rateAge(rates?.fetched_at)})
+            Fonte: Investing.com · Última atualização: {rates?.fetched_at ? new Date(rates.fetched_at).toLocaleTimeString('pt-BR') : '—'} ({rateAge(rates?.fetched_at)})
           </p>
           <button className="btn btn-p" onClick={onRefresh} disabled={refreshing}>
             <Refresh size={14} color="#fff" />
@@ -101,13 +101,16 @@ export default function SettingsPage() {
   );
 }
 
-function RateBox({ label, value }: { label: string; value: number | null | undefined }) {
+function RateBox({ label, value, warning }: { label: string; value: number | null | undefined; warning?: string | null }) {
   return (
     <div style={{ background: '#070B14', borderRadius: 10, padding: '10px 12px' }}>
       <p style={{ color: '#4A5568', fontSize: 10, marginBottom: 3 }}>{label}</p>
       <p style={{ color: '#00D4FF', fontWeight: 800, fontSize: 16 }}>
         {value ? `R$ ${fmt4(value)}` : '—'}
       </p>
+      {warning && (
+        <p style={{ color: '#FFB800', fontSize: 10, marginTop: 3 }}>⚠️ {warning}</p>
+      )}
     </div>
   );
 }

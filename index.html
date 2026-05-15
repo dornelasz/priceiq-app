@@ -145,8 +145,12 @@ const DEF_SUP=[
   {id:"alib",name:"Alibaba",     site:"alibaba.com",          url:"https://www.alibaba.com/trade/search?SearchText={q}", type:"Internacional",country:"China", cur:"USD",on:false,note:"Atacado B2B"},
   {id:"amzu",name:"Amazon USA",  site:"amazon.com",           url:"https://www.amazon.com/s?k={q}",                      type:"Internacional",country:"EUA",  cur:"USD",on:false,note:"Amazon americana"},
 ];
-const DEF_SET={usd:5.10,eur:5.55,cny:0.70,freight:25,margin:30,
-  apiKey:"",geminiModel:"gemini-2.5-flash-lite",rateSource:"",rateTime:"",rateTimestamp:0};
+const DEF_SET={usd:0,eur:0,cny:0,freight:25,margin:30,
+  apiKey:"",geminiModel:"gemini-2.5-flash-lite",rateSource:"",rateTime:"",rateTimestamp:0,
+  usdRateSource:"",eurRateSource:"",cnyRateSource:"",
+  usdRateTime:"",eurRateTime:"",cnyRateTime:"",
+  usdRateTimestamp:0,eurRateTimestamp:0,cnyRateTimestamp:0,
+  usdWarning:null,eurWarning:null,cnyWarning:null};
 
 // ══════════════════════════════════════════════════════
 // STATE
@@ -430,29 +434,6 @@ function extractPriceFromVisibleText(html,range,pair){
   return null;
 }
 
-// Fallback CORS-friendly da AwesomeAPI (Olinda/BCB-derived; spot brasileiro).
-// CHAMADO SÓ DEPOIS de a Investing ter falhado nos 9 attempts.
-// Usado especialmente para USD/BRL, que tende a ter mais bloqueio nos proxies
-// (USD/BRL é a página de currencies mais acessada da Investing).
-async function fetchAwesomeApiRate(pair){
-  const code=pair.toUpperCase();
-  const range=RATE_RANGES[code]||[0.01,100];
-  // AwesomeAPI tem CORS habilitado — chamada direta, sem proxy.
-  // Endpoint individual evita problemas de cache no Cloudflare deles.
-  const url=`https://economia.awesomeapi.com.br/json/last/${code}-BRL?_t=${Date.now()}`;
-  const r=await fetch(url,{cache:"no-store",signal:AbortSignal.timeout(6000),headers:{"Accept":"application/json"}});
-  if(!r.ok)throw new Error("AwesomeAPI HTTP "+r.status);
-  const j=await r.json();
-  const key=code+"BRL";
-  const node=j&&j[key];
-  if(!node)throw new Error("AwesomeAPI sem "+key);
-  // bid é o valor mais usado como referência spot
-  const num=parseFloat(node.bid);
-  if(!Number.isFinite(num))throw new Error("AwesomeAPI bid inválido");
-  if(num<range[0]||num>range[1])throw new Error("AwesomeAPI fora do range");
-  return num;
-}
-
 async function fetchInvestingRate(pair){
   const code=pair.toUpperCase();
   const slug=pair.toLowerCase()+"-brl";
@@ -533,116 +514,93 @@ async function fetchInvestingRate(pair){
   }
 }
 
+// Cotação: somente Investing.com. Sem AwesomeAPI, sem manual, sem IA.
+// Se uma moeda falhar: mantém o último valor AUTOMÁTICO salvo (rateSource==="Investing.com") e mostra aviso.
+// Valores manuais legados (rateSource==="manual") são ignorados como fonte.
 async function fetchLiveRates(force=false){
   const s=ST.settings;
   const nowMs=Date.now();
 
-  // CORREÇÃO GITHUB PAGES:
-  // Antes o app usava apenas rateTimestamp global. Se EUR/CNY atualizavam e USD falhava,
-  // o app marcava o pacote inteiro como atualizado e ficava 1h sem tentar USD novamente.
-  // Agora o cache só é considerado fresco quando CADA moeda tem timestamp próprio fresco.
-  const freshUsd=s.usd>0 && (s.usdRateTimestamp||0)>0 && (nowMs-(s.usdRateTimestamp||0))<RATE_TTL;
-  const freshEur=s.eur>0 && (s.eurRateTimestamp||0)>0 && (nowMs-(s.eurRateTimestamp||0))<RATE_TTL;
-  const freshCny=s.cny>0 && (s.cnyRateTimestamp||0)>0 && (nowMs-(s.cnyRateTimestamp||0))<RATE_TTL;
-  const hasFreshAllCache=freshUsd&&freshEur&&freshCny;
-
-  if(!force&&hasFreshAllCache){
+  // Cache por moeda — só valida se o último valor for da Investing.
+  function freshOf(pair){
+    const tsKey=pair+"RateTimestamp",srcKey=pair+"RateSource";
+    const ts=s[tsKey]||0;
+    if(ts<=0)return false;
+    if(s[srcKey]!=="Investing.com")return false;
+    const val=s[pair];
+    if(!(val>0))return false;
+    return (nowMs-ts)<RATE_TTL;
+  }
+  if(!force && freshOf("usd") && freshOf("eur") && freshOf("cny")){
     updateNavRateSub();
-    return {usd:s.usd,eur:s.eur,cny:s.cny,source:s.rateSource,time:s.rateTime,fromCache:true};
+    return {usd:s.usd,eur:s.eur,cny:s.cny,source:"Investing.com",time:s.rateTime,fromCache:true,partial:false,warnings:{usd:null,eur:null,cny:null}};
   }
 
   ST.rateLoading=true;
   updateNavRateSub();
 
-  // Fonte principal continua sendo Investing.com. Porém, em GitHub Pages, alguns proxies
-  // bloqueiam especificamente USD/BRL por Origin/Referer/cache. Quando isso acontece,
-  // usamos AwesomeAPI como fallback CORS-safe só para a moeda que falhou.
-  const usdErr={msg:null};const eurErr={msg:null};const cnyErr={msg:null};
-  let [usd,eur,cny]=await Promise.all([
-    fetchInvestingRate("USD").catch(e=>{usdErr.msg=e.message;console.warn("[Investing USD]",e.message);return null;}),
-    fetchInvestingRate("EUR").catch(e=>{eurErr.msg=e.message;console.warn("[Investing EUR]",e.message);return null;}),
-    fetchInvestingRate("CNY").catch(e=>{cnyErr.msg=e.message;console.warn("[Investing CNY]",e.message);return null;}),
+  const errs={USD:null,EUR:null,CNY:null};
+  const [usdR,eurR,cnyR]=await Promise.all([
+    fetchInvestingRate("USD").catch(e=>{errs.USD=e.message;console.warn("[Investing USD]",e.message);return null;}),
+    fetchInvestingRate("EUR").catch(e=>{errs.EUR=e.message;console.warn("[Investing EUR]",e.message);return null;}),
+    fetchInvestingRate("CNY").catch(e=>{errs.CNY=e.message;console.warn("[Investing CNY]",e.message);return null;}),
   ]);
 
-  const sourceByPair={USD:usd>1?"Investing.com":null,EUR:eur>1?"Investing.com":null,CNY:cny>0?"Investing.com":null};
+  const okUsd=usdR>1, okEur=eurR>1, okCny=cnyR>0;
+  const now=Date.now();
+  const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
 
-  async function fallbackPair(pair,current,errObj){
-    const code=pair.toUpperCase();
-    const range=RATE_RANGES[code]||[0.01,100];
-    if(Number.isFinite(current)&&current>=range[0]&&current<=range[1])return current;
-    try{
-      const v=await fetchAwesomeApiRate(code);
-      sourceByPair[code]="AwesomeAPI";
-      console.warn(`[${code}] Investing falhou no GitHub Pages; usando AwesomeAPI como fallback automático.`);
-      return v;
-    }catch(e){
-      errObj.msg=(errObj.msg?errObj.msg+" | ":"")+"Fallback AwesomeAPI falhou: "+e.message;
-      return current;
-    }
+  // Para cada moeda: se sucesso → atualiza valor + timestamp + source="Investing.com".
+  // Se falha → mantém último valor automático salvo (se source anterior for Investing.com).
+  function pickValue(pair,fresh,fallbackValue){
+    if(fresh)return parseFloat(fresh.toFixed(4));
+    const src=s[pair+"RateSource"];
+    const prev=s[pair];
+    if(prev>0 && src==="Investing.com")return prev;
+    return fallbackValue;
   }
+  const newUsd=pickValue("usd",okUsd?usdR:null,null);
+  const newEur=pickValue("eur",okEur?eurR:null,null);
+  const newCny=pickValue("cny",okCny?cnyR:null,null);
 
-  usd=await fallbackPair("USD",usd,usdErr);
-  eur=await fallbackPair("EUR",eur,eurErr);
-  cny=await fallbackPair("CNY",cny,cnyErr);
-
-  const okUsd=usd>1, okEur=eur>1, okCny=cny>0;
-  const anyOk=okUsd||okEur||okCny;
-
-  if(anyOk){
-    const now=Date.now();
-    const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
-    const usdWarning=okUsd?(sourceByPair.USD==="AwesomeAPI"?"USD: Investing.com falhou no GitHub Pages; atualizado via AwesomeAPI como fallback automático":null):`USD automático falhou (${usdErr.msg||"sem detalhe"}); usando último valor salvo`;
-    const eurWarning=okEur?(sourceByPair.EUR==="AwesomeAPI"?"EUR: Investing.com falhou; atualizado via AwesomeAPI como fallback automático":null):`EUR automático falhou (${eurErr.msg||"sem detalhe"}); usando último valor salvo`;
-    const cnyWarning=okCny?(sourceByPair.CNY==="AwesomeAPI"?"CNY: Investing.com falhou; atualizado via AwesomeAPI como fallback automático":null):`CNY automático falhou (${cnyErr.msg||"sem detalhe"}); usando último valor salvo`;
-
-    const sources=[sourceByPair.USD,sourceByPair.EUR,sourceByPair.CNY].filter(Boolean);
-    const globalSource=sources.length?([...new Set(sources)].join(" + ")):"manual-fallback";
-
-    ST.settings={...ST.settings,
-      usd: okUsd?parseFloat(usd.toFixed(4)):(s.usd||5.10),
-      eur: okEur?parseFloat(eur.toFixed(4)):(s.eur||5.55),
-      cny: okCny?parseFloat(cny.toFixed(4)):(s.cny||0.70),
-      rateSource:globalSource,
-      rateTime:timeStr,
-      // Mantém o timestamp global apenas como compatibilidade; cache real agora é por moeda.
-      rateTimestamp:now,
-      usdRateSource: okUsd?sourceByPair.USD:(s.usdRateSource||s.rateSource||"manual-fallback"),
-      eurRateSource: okEur?sourceByPair.EUR:(s.eurRateSource||s.rateSource||"manual-fallback"),
-      cnyRateSource: okCny?sourceByPair.CNY:(s.cnyRateSource||s.rateSource||"manual-fallback"),
-      usdRateTime: okUsd?timeStr:(s.usdRateTime||s.rateTime||"—"),
-      eurRateTime: okEur?timeStr:(s.eurRateTime||s.rateTime||"—"),
-      cnyRateTime: okCny?timeStr:(s.cnyRateTime||s.rateTime||"—"),
-      usdRateTimestamp: okUsd?now:(s.usdRateTimestamp||0),
-      eurRateTimestamp: okEur?now:(s.eurRateTimestamp||0),
-      cnyRateTimestamp: okCny?now:(s.cnyRateTimestamp||0),
-      usdWarning,eurWarning,cnyWarning,
-    };
-    persist();
-    ST.rateLoading=false;
-    updateNavRateSub();
-    return{
-      usd:ST.settings.usd,cny:ST.settings.cny,eur:ST.settings.eur,
-      source:globalSource,time:timeStr,
-      fromCache:false,
-      partial:!(okUsd&&okEur&&okCny),
-      warnings:{usd:usdWarning,eur:eurWarning,cny:cnyWarning},
-    };
+  function warnOf(pair,ok,errMsg,finalVal){
+    if(ok)return null;
+    if(finalVal>0)return `${pair.toUpperCase()}/BRL — Investing.com indisponível, exibindo último valor automático`;
+    return `${pair.toUpperCase()}/BRL — Investing.com indisponível (${errMsg||"sem detalhe"})`;
   }
+  const usdWarning=warnOf("usd",okUsd,errs.USD,newUsd);
+  const eurWarning=warnOf("eur",okEur,errs.EUR,newEur);
+  const cnyWarning=warnOf("cny",okCny,errs.CNY,newCny);
 
-  // Nada veio — mantém o que estava
+  ST.settings={...ST.settings,
+    usd:newUsd!=null?newUsd:s.usd,
+    eur:newEur!=null?newEur:s.eur,
+    cny:newCny!=null?newCny:s.cny,
+    rateSource:"Investing.com",
+    rateTime:timeStr,
+    rateTimestamp:now,
+    usdRateSource: okUsd?"Investing.com":(s.usdRateSource||""),
+    eurRateSource: okEur?"Investing.com":(s.eurRateSource||""),
+    cnyRateSource: okCny?"Investing.com":(s.cnyRateSource||""),
+    usdRateTime: okUsd?timeStr:(s.usdRateTime||"—"),
+    eurRateTime: okEur?timeStr:(s.eurRateTime||"—"),
+    cnyRateTime: okCny?timeStr:(s.cnyRateTime||"—"),
+    usdRateTimestamp: okUsd?now:(s.usdRateTimestamp||0),
+    eurRateTimestamp: okEur?now:(s.eurRateTimestamp||0),
+    cnyRateTimestamp: okCny?now:(s.cnyRateTimestamp||0),
+    usdWarning,eurWarning,cnyWarning,
+  };
+  persist();
   ST.rateLoading=false;
   updateNavRateSub();
-  const hasAnySaved=s.usd>0&&s.cny>0&&s.eur>0;
-  if(hasAnySaved){
-    return{usd:s.usd,cny:s.cny,eur:s.eur,source:s.rateSource||"manual-fallback",time:s.rateTime,fromCache:true,stale:true,
-      warnings:{
-        usd:`USD automático falhou (${usdErr.msg||"sem detalhe"}); usando último valor salvo`,
-        eur:`EUR automático falhou (${eurErr.msg||"sem detalhe"}); usando último valor salvo`,
-        cny:`CNY automático falhou (${cnyErr.msg||"sem detalhe"}); usando último valor salvo`,
-      }};
-  }
-  return{usd:s.usd||5.10,cny:s.cny||0.70,eur:s.eur||5.55,source:"manual",time:"—",fromCache:true,stale:true,
-    warnings:{usd:"Sem cotação automática para USD",eur:"Sem cotação automática para EUR",cny:"Sem cotação automática para CNY"}};
+
+  return{
+    usd:ST.settings.usd,eur:ST.settings.eur,cny:ST.settings.cny,
+    source:"Investing.com",time:timeStr,
+    fromCache:false,
+    partial:!(okUsd&&okEur&&okCny),
+    warnings:{usd:usdWarning,eur:eurWarning,cny:cnyWarning},
+  };
 }
 
 function updateNavRateSub(){
@@ -794,7 +752,7 @@ function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
     currency:cur,originalCurrency:cur,
     exchangePair:ratePair,exchangeRateUsed:rateUsed,
     priceBRL,
-    rateSource:set.rateSource||"manual",rateTime:set.rateTime||"",rateTimestamp:set.rateTimestamp||0,
+    rateSource:set.rateSource||"Investing.com",rateTime:set.rateTime||"",rateTimestamp:set.rateTimestamp||0,
     freight,total,brl,freightBRL,
     priceMinBrl:minBrl,priceMaxBrl:maxBrl,
     freeShip:["grátis confirmado","grátis","free"].includes(String(p.freightNote||"").toLowerCase()),
@@ -1082,7 +1040,7 @@ REGRAS ABSOLUTAS:
       exchangePair:ratePair,
       exchangeRateUsed:rateUsed,
       priceBRL,
-      rateSource:set.rateSource||"manual",
+      rateSource:set.rateSource||"Investing.com",
       rateTime:set.rateTime||"",
       rateTimestamp:set.rateTimestamp||0,
       // Totais
@@ -1132,7 +1090,7 @@ async function aiAnalyze(product,results){
   const alerts=[];
   if(valid.some(r=>r.needsManualFreightCheck||r.freightNote==="não encontrado")) alerts.push("Frete não encontrado em alguns resultados — confirme no site antes de comprar.");
   if(valid.some(r=>(r.totalConfidence||100)<75)) alerts.push("Alguns resultados têm confiança média — confira o link do produto.");
-  if(valid.some(r=>r.currency&&r.currency!=="BRL")) alerts.push(`Cotação usada: USD ${fmt4(set.usd)}, CNY ${fmt4(set.cny)}, EUR ${fmt4(set.eur)} (${set.rateSource||"manual"} ${set.rateTime||""}).`);
+  if(valid.some(r=>r.currency&&r.currency!=="BRL")) alerts.push(`Cotação usada: USD ${fmt4(set.usd)}, CNY ${fmt4(set.cny)}, EUR ${fmt4(set.eur)} (${set.rateSource||"Investing.com"} ${set.rateTime||""}).`);
   return{
     bestChoice:bestRecommended?.supplier||bestPrice?.supplier||"—",
     bestPriceOnly:bestPrice?.supplier||"—",
@@ -1257,7 +1215,7 @@ RETORNE APENAS JSON VÁLIDO neste formato exato:
       exchangePair:cur==="BRL"?"BRL":cur+"/BRL",
       exchangeRateUsed:rateUsed,
       priceBRL,
-      rateSource:set.rateSource||"manual",
+      rateSource:set.rateSource||"Investing.com",
       rateTime:set.rateTime||"",
       rateTimestamp:set.rateTimestamp||0,
       freight,total,brl,freightBRL,
@@ -1596,7 +1554,7 @@ function buildCards(){
     const rateDisplay=r.currency!=="BRL"
       ?`<div style="background:#070B14;border-radius:8px;padding:7px 10px;font-size:11px;color:#4A5568;margin-bottom:8px">
           ${ico.info} <span style="color:#8896AA">${esc(r.currency)}/BRL: <strong style="color:#00D4FF">${typeof r.exchangeRateUsed==="number"?fmt4(r.exchangeRateUsed):"—"}</strong></span>
-          <span style="margin-left:8px">${r.rateSource?"Fonte: "+esc(r.rateSource):"cotação manual"}</span>
+          <span style="margin-left:8px">Fonte: ${esc(r.rateSource||"Investing.com")}</span>
           ${r.rateTime?`<span style="margin-left:6px">· ${esc(r.rateTime)}</span>`:""}
         </div>`:""
 
@@ -1610,7 +1568,7 @@ function buildCards(){
           <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Avaliação</p><p style="font-size:13px">${ratingDisplay}</p></div>
           <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Preço original</p><p style="color:#E8F0FE;font-size:13px;font-weight:700">${esc(r.currency)} ${fmt(r.price)}</p></div>
           <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Preço em BRL</p><p style="color:#00D4FF;font-size:13px;font-weight:700">R$ ${fmt(r.priceBRL||r.brl)}</p></div>
-          ${r.currency!=="BRL"?`<div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Cotação usada</p><p style="color:#E8F0FE;font-size:13px">${esc(r.exchangePair)} = ${typeof r.exchangeRateUsed==="number"?fmt4(r.exchangeRateUsed):"—"} · ${esc(r.rateSource||"manual")} ${esc(r.rateTime||"")}</p></div>`:""}
+          ${r.currency!=="BRL"?`<div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Cotação usada</p><p style="color:#E8F0FE;font-size:13px">${esc(r.exchangePair)} = ${typeof r.exchangeRateUsed==="number"?fmt4(r.exchangeRateUsed):"—"} · ${esc(r.rateSource||"Investing.com")} ${esc(r.rateTime||"")}</p></div>`:""}
           <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Disponível</p><p style="color:#E8F0FE;font-size:13px">${r.available?"✅ Sim":"❌ Não"}</p></div>
           ${r.sellers>1?`<div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Vendedores</p><p style="color:#E8F0FE;font-size:13px">${r.sellers} ofertas · R$ ${fmt(r.priceMinBrl)}–R$ ${fmt(r.priceMaxBrl)}</p></div>`:""}
           <div><p style="color:#4A5568;font-size:10px;font-weight:700;text-transform:uppercase;margin-bottom:3px">Confiança</p><p class="${r.totalConfidence>=85?"conf-high":r.totalConfidence>=70?"conf-med":"conf-low"}" style="font-size:13px;font-weight:700">${r.totalConfidence||"—"}%</p></div>
@@ -1755,7 +1713,7 @@ async function doExport(type){
     const q=ST.meta?.query||ST.query;
     const s=ST.settings;
     const lines=[`🔍 *PriceIQ — ${q}*\n📅 ${new Date().toLocaleString("pt-BR")}\n`];
-    if(s.usd>0)lines.push(`💱 Cotação: USD ${fmt4(s.usd)} · CNY ${fmt4(s.cny)} · EUR ${fmt4(s.eur)} · Fonte: ${s.rateSource||"manual"}\n`);
+    if(s.usd>0)lines.push(`💱 Cotação: USD ${fmt4(s.usd)} · CNY ${fmt4(s.cny)} · EUR ${fmt4(s.eur)} · Fonte: ${s.rateSource||"Investing.com"}\n`);
     ST.results.forEach((r,i)=>{
       const m=["🥇","🥈","🥉"][i]||`${i+1}.`;
       lines.push(`${m} *${r.supplier}*`);
@@ -2004,31 +1962,23 @@ function renderSettings(){
           <div style="background:#070B14;border-radius:10px;padding:10px 12px">
             <p style="color:#4A5568;font-size:10px;margin-bottom:3px">USD/BRL</p>
             <p style="color:#00D4FF;font-weight:800;font-size:16px">R$ ${s.usd>0?fmt4(s.usd):"—"}</p>
+            ${s.usdWarning?`<p style="color:#FFB800;font-size:10px;margin-top:3px">⚠️ ${esc(s.usdWarning)}</p>`:""}
           </div>
           <div style="background:#070B14;border-radius:10px;padding:10px 12px">
             <p style="color:#4A5568;font-size:10px;margin-bottom:3px">CNY/BRL</p>
             <p style="color:#00D4FF;font-weight:800;font-size:16px">R$ ${s.cny>0?fmt4(s.cny):"—"}</p>
+            ${s.cnyWarning?`<p style="color:#FFB800;font-size:10px;margin-top:3px">⚠️ ${esc(s.cnyWarning)}</p>`:""}
           </div>
           <div style="background:#070B14;border-radius:10px;padding:10px 12px">
             <p style="color:#4A5568;font-size:10px;margin-bottom:3px">EUR/BRL</p>
             <p style="color:#00D4FF;font-weight:800;font-size:16px">R$ ${s.eur>0?fmt4(s.eur):"—"}</p>
+            ${s.eurWarning?`<p style="color:#FFB800;font-size:10px;margin-top:3px">⚠️ ${esc(s.eurWarning)}</p>`:""}
           </div>
         </div>
         <p style="color:${rateStale?"#FFB800":"#4A5568"};font-size:12px;margin-bottom:12px">
-          ${rateStale?"⚠️ Cotação desatualizada · ":""}Fonte: ${s.rateSource||"não atualizado"} · Última atualização: ${s.rateTime||"—"} (${rateAge()})
+          ${rateStale?"⚠️ Cotação desatualizada · ":""}Fonte: Investing.com · Última atualização: ${s.rateTime||"—"} (${rateAge()})
         </p>
         <button class="btn btn-p" onclick="refreshRatesSettings()">${ico.refresh} Atualizar cotação agora</button>
-      </div>
-
-      <!-- Câmbio manual -->
-      <div class="card">
-        <p style="color:#8896AA;font-size:12px;font-weight:700;text-transform:uppercase;margin-bottom:6px;letter-spacing:.5px">✏️ Correção manual de câmbio</p>
-        <p style="color:#4A5568;font-size:11px;margin-bottom:14px">Edite os valores e clique em <strong style="color:#8896AA">Salvar</strong> para aplicar imediatamente. A cotação manual será usada por 1 minuto antes da próxima atualização automática.</p>
-        <div class="g3">
-          <div><label class="lbl">USD→BRL</label><input id="set-usd" type="number" step=".0001" class="inp" value="${s.usd}"/></div>
-          <div><label class="lbl">EUR→BRL</label><input id="set-eur" type="number" step=".0001" class="inp" value="${s.eur}"/></div>
-          <div><label class="lbl">CNY→BRL</label><input id="set-cny" type="number" step=".0001" class="inp" value="${s.cny}"/></div>
-        </div>
       </div>
 
       <!-- Frete & Margem -->
@@ -2079,28 +2029,16 @@ async function refreshRatesSettings(){
 
 function saveSettings(){
   const g=id=>{const el=document.getElementById(id);return el?el.value:""};
-  const newUsd=parseFloat(g("set-usd"))||ST.settings.usd;
-  const newEur=parseFloat(g("set-eur"))||ST.settings.eur;
-  const newCny=parseFloat(g("set-cny"))||ST.settings.cny;
-  const ratesChanged=(newUsd!==ST.settings.usd||newEur!==ST.settings.eur||newCny!==ST.settings.cny);
-  const timeStr=new Date().toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit"});
   ST.settings={
     ...ST.settings,
-    usd:newUsd,
-    eur:newEur,
-    cny:newCny,
     freight:parseFloat(g("set-frt"))||25,
     margin:parseFloat(g("set-mrg"))||30,
     apiKey:String(g("set-api")||ST.settings.apiKey||"").trim(),
     geminiModel:String(g("set-model")||ST.settings.geminiModel||"gemini-2.5-flash-lite").trim(),
-    // Quando o usuário altera taxas manualmente, marca como manual e atualiza timestamp
-    // para que fetchLiveRates() trate os valores novos como cache válido por 1min
-    ...(ratesChanged?{rateSource:"manual",rateTime:timeStr,rateTimestamp:Date.now()}:{})
   };
   LS.s("piq_gemini_key",ST.settings.apiKey);
   persist();
-  if(ratesChanged)toast(`Taxas manuais salvas: USD ${fmt4(newUsd)} · EUR ${fmt4(newEur)} · CNY ${fmt4(newCny)}`);
-  else toast("Configurações salvas!");
+  toast("Configurações salvas!");
   updateNavRateSub();
   renderSettings();
 }

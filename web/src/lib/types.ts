@@ -87,6 +87,7 @@ export interface RatesPayload {
   fetched_at: string;
   from_cache: boolean;
   partial?: boolean;
+  warnings?: { usd: string | null; eur: string | null; cny: string | null };
 }
 
 export interface ApiError {
