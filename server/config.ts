@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
+const boolFromEnv = (v: string): boolean => v === 'true' || v === '1' || v === 'yes';
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
@@ -15,20 +17,20 @@ const envSchema = z.object({
   GEMINI_MODEL: z.string().default('gemini-2.5-flash-lite'),
   // Gemini é OPCIONAL — desligado por padrão. Quando ligado, atua só como
   // interpretador de texto JÁ coletado por scrapers. NUNCA é fonte de preço.
-  GEMINI_ENABLED: z
-    .string()
-    .default('false')
-    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
-  GEMINI_OPTIONAL: z
-    .string()
-    .default('true')
-    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
-  USE_GEMINI_AS_FALLBACK_ONLY: z
-    .string()
-    .default('true')
-    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
+  GEMINI_ENABLED: z.string().default('false').transform(boolFromEnv),
+  GEMINI_OPTIONAL: z.string().default('true').transform(boolFromEnv),
+  USE_GEMINI_AS_FALLBACK_ONLY: z.string().default('true').transform(boolFromEnv),
 
+  // Cotação: automática primeiro. Manual/cache/histórico entram só como fallback.
   RATES_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(60),
+  CURRENCY_PRIMARY_SOURCE: z.string().default('awesomeapi'),
+  CURRENCY_FALLBACK_SOURCE: z.string().default('investing'),
+  CURRENCY_REFRESH_INTERVAL_MS: z.coerce.number().int().positive().default(60000),
+
+  // Busca/cache/scrapers
+  SEARCH_CACHE_MINUTES: z.coerce.number().int().positive().default(30),
+  ENABLE_SEARCH_CACHE: z.string().default('true').transform(boolFromEnv),
+  MAX_SUPPLIERS_PER_SEARCH: z.coerce.number().int().positive().default(10),
   SUPPLIER_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
   SCRAPER_TIMEOUT_MS: z.coerce.number().int().positive().default(45000),
   SEARCH_CONCURRENCY: z.coerce.number().int().positive().default(5),
