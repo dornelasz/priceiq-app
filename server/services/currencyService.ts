@@ -59,6 +59,12 @@ function extractPriceFromHtml(html: string, range: [number, number]): number | n
     /"last":\s*"?([\d.]+)"?\s*[,}]/,
     /"regularMarketPrice":\s*([\d.]+)/,
     /"last_close":\s*"?([\d.]+)"?/,
+    // Padrões adicionais usados em /historical-data, /technical, /streaming-chart
+    /pid-\d+-last[^>]*>\s*([\d.,]+)\s*</i,
+    /id=["']last_last["'][^>]*>\s*([\d.,]+)\s*</i,
+    /class=["'][^"']*text-2xl[^"']*["'][^>]*>\s*([\d.,]+)\s*</i,
+    /"lastPrice":\s*"?([\d.]+)"?/,
+    /"price":\s*"?([\d.]+)"?\s*[,}]/,
   ];
   for (const p of patterns) {
     const m = html.match(p);
@@ -154,42 +160,62 @@ async function fetchAwesomeRates(): Promise<Partial<Record<Pair, number>>> {
 async function fetchOneInvesting(pair: Pair): Promise<number> {
   const slug = pair.toLowerCase() + '-brl';
   const range = RATE_RANGES[pair];
-  const hosts = [`https://www.investing.com/currencies/${slug}`, `https://br.investing.com/currencies/${slug}`, `https://m.investing.com/currencies/${slug}`];
+  // 6 hosts — Investing tem várias páginas para o mesmo par. USD/BRL é
+  // o par mais acessado; cache dos proxies satura nele. Mais variações
+  // = mais chance de cache miss em alguma combinação.
+  const hosts = [
+    `https://www.investing.com/currencies/${slug}`,
+    `https://br.investing.com/currencies/${slug}`,
+    `https://m.investing.com/currencies/${slug}`,
+    `https://www.investing.com/currencies/${slug}-historical-data`,
+    `https://www.investing.com/currencies/${slug}-technical`,
+    `https://www.investing.com/currencies/${slug}-streaming-chart`,
+  ];
+  // 5 proxies — server-side podemos usar direto (sem proxy) também
   const proxies: Array<(u: string) => string> = [
     (u) => u,
     (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
     (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
     (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+    (u) => `https://api.cors.lol/?url=${encodeURIComponent(u)}`,
   ];
 
   const attempts: Array<Promise<number>> = [];
+  const failures: string[] = [];
   for (const host of hosts) {
     for (const mkProxy of proxies) {
       attempts.push((async () => {
-        const url = mkProxy(host + '?_t=' + Date.now());
+        const buster = `_t=${Date.now()}_r=${Math.random().toString(36).slice(2, 8)}`;
+        const url = mkProxy(host + '?' + buster);
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 6000);
+        const timer = setTimeout(() => controller.abort(), 7000);
         try {
           const r = await fetch(url, {
             signal: controller.signal,
             headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PriceIQ/1.0)', Accept: 'text/html,application/xhtml+xml' },
           });
-          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          if (!r.ok) {
+            failures.push(`${pair} ${host.split('/').pop()} → HTTP ${r.status}`);
+            throw new Error(`HTTP ${r.status}`);
+          }
           const html = await r.text();
-          // 1) Parser DOM/JSON (rápido e preciso quando o conteúdo é completo)
+          // 1) Parser DOM/JSON (rápido e preciso)
           const fromDom = extractPriceFromHtml(html, range);
           if (fromDom !== null) return fromDom;
-          // 2) Fallback de texto visível — pega frases descritivas que aparecem
-          //    mesmo quando o DOM não foi renderizado. Crítico p/ USD/BRL,
-          //    cuja página tende a vir mais estática nos proxies.
+          // 2) Fallback texto visível (crítico p/ USD/BRL)
           const fromText = extractPriceFromVisibleText(html, range, pair);
           if (fromText !== null) return fromText;
+          failures.push(`${pair} ${host.split('/').pop()} → HTML sem preço (${html.length}b)`);
           throw new Error('preço não encontrado');
         } finally { clearTimeout(timer); }
       })());
     }
   }
-  return Promise.any(attempts).catch(() => { throw new Error(`Investing.com falhou para ${pair}`); });
+  return Promise.any(attempts).catch(() => {
+    console.warn(`[Investing ${pair}] todas as ${attempts.length} tentativas falharam:`);
+    failures.slice(0, 15).forEach((f) => console.warn('  · ' + f));
+    throw new Error(`Investing.com falhou para ${pair} (${attempts.length} tentativas)`);
+  });
 }
 
 async function fetchAutoForPair(pair: Pair, awesomeRates: Partial<Record<Pair, number>>): Promise<{ value: number | null; source: string | null; warning: string | null }> {
