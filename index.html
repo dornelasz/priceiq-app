@@ -430,51 +430,107 @@ function extractPriceFromVisibleText(html,range,pair){
   return null;
 }
 
+// Fallback CORS-friendly da AwesomeAPI (Olinda/BCB-derived; spot brasileiro).
+// CHAMADO SÓ DEPOIS de a Investing ter falhado nos 9 attempts.
+// Usado especialmente para USD/BRL, que tende a ter mais bloqueio nos proxies
+// (USD/BRL é a página de currencies mais acessada da Investing).
+async function fetchAwesomeApiRate(pair){
+  const code=pair.toUpperCase();
+  const range=RATE_RANGES[code]||[0.01,100];
+  // AwesomeAPI tem CORS habilitado — chamada direta, sem proxy.
+  // Endpoint individual evita problemas de cache no Cloudflare deles.
+  const url=`https://economia.awesomeapi.com.br/json/last/${code}-BRL?_t=${Date.now()}`;
+  const r=await fetch(url,{cache:"no-store",signal:AbortSignal.timeout(6000),headers:{"Accept":"application/json"}});
+  if(!r.ok)throw new Error("AwesomeAPI HTTP "+r.status);
+  const j=await r.json();
+  const key=code+"BRL";
+  const node=j&&j[key];
+  if(!node)throw new Error("AwesomeAPI sem "+key);
+  // bid é o valor mais usado como referência spot
+  const num=parseFloat(node.bid);
+  if(!Number.isFinite(num))throw new Error("AwesomeAPI bid inválido");
+  if(num<range[0]||num>range[1])throw new Error("AwesomeAPI fora do range");
+  return num;
+}
+
 async function fetchInvestingRate(pair){
+  const code=pair.toUpperCase();
   const slug=pair.toLowerCase()+"-brl";
-  const range=RATE_RANGES[pair.toUpperCase()]||[0.01,100];
+  const range=RATE_RANGES[code]||[0.01,100];
+  // 6 hosts/slugs — Investing tem múltiplas páginas para o mesmo par.
+  // USD/BRL é o par mais acessado do mundo; cache dos proxies satura.
+  // Usar mais variações = mais chance de pegar um cache não-saturado.
   const hosts=[
     "https://www.investing.com/currencies/"+slug,
     "https://br.investing.com/currencies/"+slug,
     "https://m.investing.com/currencies/"+slug,
+    // Páginas alternativas da Investing que ainda têm o preço em destaque:
+    "https://www.investing.com/currencies/"+slug+"-historical-data",
+    "https://www.investing.com/currencies/"+slug+"-technical",
+    "https://www.investing.com/currencies/"+slug+"-streaming-chart",
   ];
+  // 5 proxies CORS — adicionados thingproxy + cors.lol como reforço.
+  // Cada proxy tem seu próprio rate limit; mais proxies = mais headroom p/ USD.
   const proxies=[
     u=>"https://corsproxy.io/?"+encodeURIComponent(u),
     u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
     u=>"https://api.codetabs.com/v1/proxy?quest="+encodeURIComponent(u),
+    u=>"https://api.cors.lol/?url="+encodeURIComponent(u),
+    u=>"https://thingproxy.freeboard.io/fetch/"+u,
   ];
-  // Race em paralelo: 9 combinações simultâneas, primeiro sucesso vence (≈ 1-3s vs 90s sequencial)
+  // Cache buster com timestamp + random — força miss no cache dos proxies
+  const buster=()=>"_t="+Date.now()+"_r="+Math.random().toString(36).slice(2,8);
+  // Race em paralelo: 6 hosts × 5 proxies = 30 tentativas simultâneas
   const attempts=[];
+  const failures=[];
   for(const host of hosts){
     for(const mkProxy of proxies){
       attempts.push((async()=>{
-        const proxyUrl=mkProxy(host+"?_t="+Date.now());
-        const r=await fetch(proxyUrl,{cache:"no-store",signal:AbortSignal.timeout(6000)});
-        if(!r.ok)throw new Error("HTTP "+r.status);
-        const html=await r.text();
-        // 1) Parser DOM/JSON (preciso quando o conteúdo é completo)
-        const domPatterns=[
-          /data-test=["']instrument-price-last["'][^>]*>\s*([\d.,]+)\s*</i,
-          /"last":\s*"?([\d.]+)"?\s*[,}]/,
-          /"regularMarketPrice":\s*([\d.]+)/,
-          /"last_close":\s*"?([\d.]+)"?/,
-        ];
-        for(const p of domPatterns){
-          const m=html.match(p);
-          if(!m)continue;
-          const num=parseInvestingNum(m[1]);
-          if(num>=range[0]&&num<=range[1])return num;
+        const proxyUrl=mkProxy(host+"?"+buster());
+        try{
+          const r=await fetch(proxyUrl,{cache:"no-store",signal:AbortSignal.timeout(7000)});
+          if(!r.ok){failures.push(code+" "+host.split("/").pop()+" via "+proxyUrl.split("?")[0]+" → HTTP "+r.status);throw new Error("HTTP "+r.status);}
+          const html=await r.text();
+          // 1) DOM/JSON patterns (rápido + preciso quando o conteúdo é completo)
+          const domPatterns=[
+            /data-test=["']instrument-price-last["'][^>]*>\s*([\d.,]+)\s*</i,
+            /"last":\s*"?([\d.]+)"?\s*[,}]/,
+            /"regularMarketPrice":\s*([\d.]+)/,
+            /"last_close":\s*"?([\d.]+)"?/,
+            // Padrões adicionais que algumas páginas usam (historical-data, technical)
+            /pid-\d+-last[^>]*>\s*([\d.,]+)\s*</i,
+            /id=["']last_last["'][^>]*>\s*([\d.,]+)\s*</i,
+            /class=["'][^"']*text-2xl[^"']*["'][^>]*>\s*([\d.,]+)\s*</i,
+            /"lastPrice":\s*"?([\d.]+)"?/,
+            /"price":\s*"?([\d.]+)"?\s*[,}]/,
+          ];
+          for(const p of domPatterns){
+            const m=html.match(p);
+            if(!m)continue;
+            const num=parseInvestingNum(m[1]);
+            if(num>=range[0]&&num<=range[1])return num;
+          }
+          // 2) Fallback texto visível
+          const fromText=extractPriceFromVisibleText(html,range,pair);
+          if(fromText!==null)return fromText;
+          failures.push(code+" "+host.split("/").pop()+" via "+proxyUrl.split("?")[0]+" → HTML sem preço ("+html.length+"b)");
+          throw new Error("preço não encontrado");
+        }catch(e){
+          failures.push(code+" "+host.split("/").pop()+" via "+proxyUrl.split("?")[0]+" → "+e.message);
+          throw e;
         }
-        // 2) Fallback texto visível — pega frases descritivas que sobrevivem
-        //    quando os proxies retornam HTML estático. Crítico p/ USD/BRL.
-        const fromText=extractPriceFromVisibleText(html,range,pair);
-        if(fromText!==null)return fromText;
-        throw new Error("preço não encontrado em "+host);
       })());
     }
   }
-  try{return await Promise.any(attempts);}
-  catch{throw new Error("Investing.com falhou para "+pair);}
+  try{
+    const v=await Promise.any(attempts);
+    return v;
+  }catch(e){
+    // Loga TODAS as falhas pro DevTools — facilita diagnosticar exatamente o que aconteceu
+    console.warn("[Investing "+code+"] todas as "+attempts.length+" tentativas falharam:");
+    failures.slice(0,15).forEach(f=>console.warn("  · "+f));
+    throw new Error("Investing.com falhou para "+pair+" ("+attempts.length+" tentativas)");
+  }
 }
 
 async function fetchLiveRates(force=false){
