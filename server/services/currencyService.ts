@@ -1,14 +1,3 @@
-/**
- * Cotação Investing.com — porta do algoritmo do frontend (que está validado e estável).
- *
- * Diferenças vs. browser:
- *  - Server-side não tem CORS, então pode fazer fetch direto.
- *  - Mantém os mesmos proxies como fallback (caso Investing bloqueie o IP do servidor).
- *  - Cache Redis (TTL configurável) reduz hits ao Investing.
- *
- * IMPORTANTE: a lógica de Promise.any + parsing por data-test foi preservada
- * intacta — é o estado estável validado pelo usuário.
- */
 import { config } from '../config.js';
 import { query } from '../db/client.js';
 import { cacheService } from './cacheService.js';
@@ -21,6 +10,16 @@ const RATE_RANGES: Record<Pair, [number, number]> = {
   CNY: [0.3, 2.0],
 };
 
+interface CurrencyRateDetail {
+  currency: Pair;
+  brl_rate: number | null;
+  source: string;
+  collected_at: string;
+  is_manual: boolean;
+  manual_rate: number | null;
+  warning: string | null;
+}
+
 interface RatesPayload {
   usd: number | null;
   eur: number | null;
@@ -28,6 +27,13 @@ interface RatesPayload {
   source: string;
   fetched_at: string;
   from_cache: boolean;
+  partial?: boolean;
+  details: Record<Pair, CurrencyRateDetail>;
+}
+
+interface ManualRatesSettings {
+  manual_mode?: boolean;
+  rates?: Partial<Record<Pair, number>>;
 }
 
 const CACHE_KEY = 'rates:current';
@@ -63,16 +69,30 @@ function extractPriceFromHtml(html: string, range: [number, number]): number | n
   return null;
 }
 
-async function fetchOne(pair: Pair): Promise<number> {
+async function fetchAwesomeRates(): Promise<Partial<Record<Pair, number>>> {
+  const url = 'https://economia.awesomeapi.com.br/json/last/USD-BRL,EUR-BRL,CNY-BRL';
+  const r = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`AwesomeAPI HTTP ${r.status}`);
+  const json = await r.json() as Record<string, { bid?: string }>;
+  const parsePair = (k: string, range: [number, number]): number | null => {
+    const value = parseFloat(json[k]?.bid ?? '');
+    if (!Number.isFinite(value)) return null;
+    if (value < range[0] || value > range[1]) return null;
+    return value;
+  };
+  return {
+    USD: parsePair('USDBRL', RATE_RANGES.USD) ?? undefined,
+    EUR: parsePair('EURBRL', RATE_RANGES.EUR) ?? undefined,
+    CNY: parsePair('CNYBRL', RATE_RANGES.CNY) ?? undefined,
+  };
+}
+
+async function fetchOneInvesting(pair: Pair): Promise<number> {
   const slug = pair.toLowerCase() + '-brl';
   const range = RATE_RANGES[pair];
-  const hosts = [
-    `https://www.investing.com/currencies/${slug}`,
-    `https://br.investing.com/currencies/${slug}`,
-    `https://m.investing.com/currencies/${slug}`,
-  ];
+  const hosts = [`https://www.investing.com/currencies/${slug}`, `https://br.investing.com/currencies/${slug}`, `https://m.investing.com/currencies/${slug}`];
   const proxies: Array<(u: string) => string> = [
-    (u) => u,                                                            // direto (sem CORS no server)
+    (u) => u,
     (u) => `https://corsproxy.io/?${encodeURIComponent(u)}`,
     (u) => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
     (u) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
@@ -81,119 +101,132 @@ async function fetchOne(pair: Pair): Promise<number> {
   const attempts: Array<Promise<number>> = [];
   for (const host of hosts) {
     for (const mkProxy of proxies) {
-      attempts.push(
-        (async () => {
-          const url = mkProxy(host + '?_t=' + Date.now());
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 6000);
-          try {
-            const r = await fetch(url, {
-              signal: controller.signal,
-              headers: {
-                'User-Agent': 'Mozilla/5.0 (compatible; PriceIQ/1.0)',
-                Accept: 'text/html,application/xhtml+xml',
-              },
-            });
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            const html = await r.text();
-            const num = extractPriceFromHtml(html, range);
-            if (num === null) throw new Error('preço não encontrado');
-            return num;
-          } finally {
-            clearTimeout(timer);
-          }
-        })(),
-      );
+      attempts.push((async () => {
+        const url = mkProxy(host + '?_t=' + Date.now());
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 6000);
+        try {
+          const r = await fetch(url, {
+            signal: controller.signal,
+            headers: { 'User-Agent': 'Mozilla/5.0 (compatible; PriceIQ/1.0)', Accept: 'text/html,application/xhtml+xml' },
+          });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          const html = await r.text();
+          const num = extractPriceFromHtml(html, range);
+          if (num === null) throw new Error('preço não encontrado');
+          return num;
+        } finally { clearTimeout(timer); }
+      })());
     }
   }
-  return Promise.any(attempts).catch(() => {
-    throw new Error(`Investing.com falhou para ${pair}`);
-  });
+  return Promise.any(attempts).catch(() => { throw new Error(`Investing.com falhou para ${pair}`); });
 }
 
-async function persistRate(pair: Pair, value: number): Promise<void> {
+async function fetchAutoForPair(pair: Pair, awesomeRates: Partial<Record<Pair, number>>): Promise<{ value: number | null; source: string | null; warning: string | null }> {
+  const awesome = awesomeRates[pair];
+  if (typeof awesome === 'number') return { value: awesome, source: 'AwesomeAPI', warning: null };
   try {
-    await query(
-      `INSERT INTO exchange_rates (currency, brl_rate, source) VALUES ($1, $2, $3)`,
-      [pair, value, 'Investing.com'],
-    );
+    const investing = await fetchOneInvesting(pair);
+    return { value: investing, source: 'Investing.com', warning: 'AwesomeAPI indisponível; fallback automático via Investing.com' };
+  } catch (e) {
+    return { value: null, source: null, warning: `Falha na atualização automática (${(e as Error).message})` };
+  }
+}
+
+async function persistRate(pair: Pair, value: number, source: string): Promise<void> {
+  try {
+    await query(`INSERT INTO exchange_rates (currency, brl_rate, source) VALUES ($1, $2, $3)`, [pair, value, source]);
   } catch (e) {
     console.warn('[currency] não foi possível persistir cotação:', (e as Error).message);
   }
 }
 
+async function getManualSettings(): Promise<ManualRatesSettings> {
+  try {
+    const r = await query<{ value: unknown }>('SELECT value FROM app_settings WHERE key = $1 LIMIT 1', ['rates_manual']);
+    return (r.rows[0]?.value as ManualRatesSettings | undefined) ?? {};
+  } catch {
+    return {};
+  }
+}
+
 export const currencyService = {
-  /**
-   * Retorna cotações (USD/EUR/CNY) — usa cache Redis se válido,
-   * senão refresca da Investing.com. Aceita atualização PARCIAL
-   * (se 1 ou 2 das 3 moedas falharem, retorna as válidas).
-   */
   async getRates(force = false): Promise<RatesPayload> {
     if (!force) {
       const cached = await cacheService.getJson<RatesPayload>(CACHE_KEY);
       if (cached) return { ...cached, from_cache: true };
     }
 
-    const [usd, eur, cny] = await Promise.all([
-      fetchOne('USD').catch((e) => {
-        console.warn('[currency USD]', (e as Error).message);
-        return null;
-      }),
-      fetchOne('EUR').catch((e) => {
-        console.warn('[currency EUR]', (e as Error).message);
-        return null;
-      }),
-      fetchOne('CNY').catch((e) => {
-        console.warn('[currency CNY]', (e as Error).message);
-        return null;
-      }),
-    ]);
+    const manual = await getManualSettings();
+    const awesomeRates = await fetchAwesomeRates().catch(() => ({}));
+    const now = new Date().toISOString();
 
-    // Persiste no histórico para as que vieram
-    if (usd !== null) void persistRate('USD', usd);
-    if (eur !== null) void persistRate('EUR', eur);
-    if (cny !== null) void persistRate('CNY', cny);
-
-    // Se nada veio E não há cache, retorna nulls
-    if (usd === null && eur === null && cny === null) {
-      const fallback = await cacheService.getJson<RatesPayload>(CACHE_KEY);
-      if (fallback) return { ...fallback, from_cache: true };
-      return {
-        usd: null,
-        eur: null,
-        cny: null,
+    const entries = await Promise.all((['USD', 'EUR', 'CNY'] as Pair[]).map(async (pair) => {
+      const auto = await fetchAutoForPair(pair, awesomeRates);
+      const manualRate = manual.rates?.[pair] ?? null;
+      if (auto.value !== null) {
+        void persistRate(pair, auto.value, auto.source ?? 'auto');
+        return [pair, {
+          currency: pair,
+          brl_rate: auto.value,
+          source: auto.source ?? 'auto',
+          collected_at: now,
+          is_manual: false,
+          manual_rate: manualRate,
+          warning: auto.warning,
+        } satisfies CurrencyRateDetail] as const;
+      }
+      if (typeof manualRate === 'number') {
+        return [pair, {
+          currency: pair,
+          brl_rate: manualRate,
+          source: 'manual-fallback',
+          collected_at: now,
+          is_manual: true,
+          manual_rate: manualRate,
+          warning: auto.warning,
+        } satisfies CurrencyRateDetail] as const;
+      }
+      return [pair, {
+        currency: pair,
+        brl_rate: null,
         source: 'unavailable',
-        fetched_at: new Date().toISOString(),
-        from_cache: false,
-      };
+        collected_at: now,
+        is_manual: false,
+        manual_rate: manualRate,
+        warning: auto.warning,
+      } satisfies CurrencyRateDetail] as const;
+    }));
+
+    const details = Object.fromEntries(entries) as Record<Pair, CurrencyRateDetail>;
+
+    if (manual.manual_mode) {
+      for (const pair of ['USD', 'EUR', 'CNY'] as Pair[]) {
+        const value = manual.rates?.[pair];
+        if (typeof value === 'number') {
+          details[pair] = {
+            ...details[pair],
+            brl_rate: value,
+            source: 'manual-mode',
+            is_manual: true,
+            warning: details[pair].warning ?? 'Modo manual ativo para esta moeda',
+          };
+        }
+      }
     }
 
-    // Mescla com cache para preencher moedas faltantes
-    const cached = await cacheService.getJson<RatesPayload>(CACHE_KEY);
     const payload: RatesPayload = {
-      usd: usd ?? cached?.usd ?? null,
-      eur: eur ?? cached?.eur ?? null,
-      cny: cny ?? cached?.cny ?? null,
-      source: 'Investing.com',
-      fetched_at: new Date().toISOString(),
+      usd: details.USD.brl_rate,
+      eur: details.EUR.brl_rate,
+      cny: details.CNY.brl_rate,
+      source: 'multi-source',
+      fetched_at: now,
       from_cache: false,
+      partial: [details.USD, details.EUR, details.CNY].some((x) => !!x.warning),
+      details,
     };
 
     await cacheService.setJson(CACHE_KEY, payload, config.RATES_CACHE_TTL_SECONDS);
     return payload;
-  },
-
-  async getHistory(pair: Pair, limit = 50): Promise<Array<{ value: number; collected_at: string }>> {
-    const r = await query<{ brl_rate: string; collected_at: Date }>(
-      `SELECT brl_rate, collected_at FROM exchange_rates
-       WHERE currency = $1
-       ORDER BY collected_at DESC
-       LIMIT $2`,
-      [pair, limit],
-    );
-    return r.rows.map((row) => ({
-      value: parseFloat(row.brl_rate),
-      collected_at: row.collected_at.toISOString(),
-    }));
   },
 };
