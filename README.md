@@ -1,6 +1,6 @@
 # PriceIQ
 
-> Comparador de preços com cotação ao vivo da Investing.com
+> Comparador de preços com cotação ao vivo automática e busca por fornecedores
 
 ## Estado atual
 
@@ -11,7 +11,7 @@ PriceIQ está em transição de **app single-file** para **SaaS web completo**. 
 - **URL:** https://dornelasz.github.io/priceiq-app
 - **Função:** referência visual e backup. NÃO é o alvo da migração SaaS.
 
-### Versão SaaS (Etapas 1-4 concluídas)
+### Versão SaaS
 - **`server/`** — backend Fastify + Postgres + Redis (cotação, busca, suppliers, histórico)
 - **`web/`** — frontend Next.js 14 (App Router) com visual idêntico ao legado
 - **`docker-compose.yml`** — Postgres 16 + Redis 7 para dev
@@ -21,9 +21,9 @@ PriceIQ está em transição de **app single-file** para **SaaS web completo**. 
 ```
 priceiq-app/
 ├── index.html              App legado em produção (referência visual)
-├── web/                    ✨ Frontend Next.js 14 (Etapa 4)
+├── web/                    ✨ Frontend Next.js 14
 │   └── src/{app,components,lib}/
-├── server/                 ✨ Backend Fastify + Postgres + Redis (Etapas 2-3)
+├── server/                 ✨ Backend Fastify + Postgres + Redis
 │   └── {routes,services,scrapers,workers,db,lib}/
 ├── infra/                  Configs de infraestrutura
 ├── docs/                   Documentação de arquitetura
@@ -41,7 +41,7 @@ docker compose up -d
 
 # 2. Backend
 cd server
-cp .env.example .env       # ajustar GEMINI_API_KEY
+cp .env.example .env       # ajustar variáveis necessárias
 npm install
 npm run db:seed            # aplica schema + insere 7 fornecedores padrão
 npm run dev                # http://localhost:3001
@@ -56,9 +56,30 @@ npm run dev                # http://localhost:3000
 ## Como testar pelo deploy
 
 ### Vercel (frontend) + Render (backend) — recomendado
-1. **Render**: provisione Postgres + Redis + Web Service apontando para `server/`. Definir `GEMINI_API_KEY`.
-2. **Vercel**: importar repo, root = `web/`, env `NEXT_PUBLIC_API_URL = https://<sua-api>.onrender.com`
+1. **Render**: provisione Postgres + Redis + Web Service apontando para `server/`.
+2. **Vercel**: importar repo, root = `web/`, env `NEXT_PUBLIC_API_URL = https://<sua-api>.onrender.com`.
 3. Acessar a URL do Vercel — visual idêntico ao `index.html`, mas dados vêm do backend.
+
+## Cotação automática
+
+A cotação não usa Gemini nem qualquer IA.
+
+Ordem atual:
+
+1. **AwesomeAPI** como fonte principal para `USD-BRL`, `EUR-BRL` e `CNY-BRL`.
+2. **Investing.com** como fallback por moeda, se a fonte principal falhar.
+3. **Cache/histórico** apenas como fallback quando a atualização automática não conseguir retornar a moeda.
+
+Isso corrige o caso em que o USD ficava preso em valor manual/cacheado: quando a atualização automática funciona, `USD/BRL` volta a ser sobrescrito pela fonte automática.
+
+Variáveis relevantes:
+
+```env
+RATES_CACHE_TTL_SECONDS=60
+CURRENCY_PRIMARY_SOURCE=awesomeapi
+CURRENCY_FALLBACK_SOURCE=investing
+CURRENCY_REFRESH_INTERVAL_MS=60000
+```
 
 ## Roadmap
 
@@ -66,8 +87,8 @@ npm run dev                # http://localhost:3000
 - [x] **Etapa 2** — Backend Fastify (rotas + services + scrapers + worker)
 - [x] **Etapa 3** — Schema PostgreSQL + migrations + seed + CI
 - [x] **Etapa 4** — Frontend Next.js (visual idêntico, consome API)
-- [ ] **Etapa 5** — Auth + multi-tenancy
-- [ ] **Etapa 6** — Deploy de produção + billing
+- [x] **Etapa 5** — Motor de busca com scrapers, anti-produto fantasma e Gemini opcional
+- [ ] **Etapa 6** — Cache/uso alto + deploy de produção
 
 ## Uso sem dependência de IA
 
@@ -78,7 +99,7 @@ npm run dev                # http://localhost:3000
 | Scrapers específicos (ML/Amazon/Shopee/Magalu/AliExpress) | Motor primário — URL otimizada por marketplace |
 | Jina Reader + extração direta (regex) | Pipeline default — sem IA |
 | Cache de resultados por fornecedor | Evita buscas repetidas |
-| Cotação Investing.com (Promise.any × 9 tentativas) | Conversão BRL — sem IA |
+| Cotação AwesomeAPI + Investing fallback | Conversão BRL — sem IA |
 | Validação de URL (`urlValidator`) | Bloqueia produto fantasma |
 | Playwright | Fallback quando Jina é bloqueado (451/403) |
 | **Gemini** | **OPCIONAL** — interpretador de texto JÁ coletado, nunca fonte primária |
@@ -93,10 +114,10 @@ Gemini NUNCA:
 
 ## Regras invioláveis
 
-- ❌ **Não alterar** a lógica de cotação Investing.com — algoritmo Promise.any com 9 tentativas está estável
 - ❌ **Não redesenhar** a UI — visual de `index.html` é a fonte da verdade
 - ❌ **Gemini é opcional e roda apenas no backend** — chave em `server/.env`, nunca no frontend
 - ❌ **Não inventar preço** — `urlValidator` + extração direta rejeitam resultados sem evidência
+- ❌ **Não usar IA para cotação** — cotação usa AwesomeAPI/Investing/cache
 - ❌ **Migração incremental** — cada etapa em PR separado, sem quebrar o legado
 
 ## CI
