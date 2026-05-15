@@ -1,17 +1,22 @@
 /**
- * Scraper baseado em Jina Reader (https://r.jina.ai) + Gemini.
+ * Scraper genérico baseado em Jina Reader (https://r.jina.ai) + Gemini.
  *
  * Fluxo:
- *  1. Constrói URL de busca do fornecedor (a partir do url_template)
+ *  1. Constrói URL de busca a partir do search_url_template do fornecedor
  *  2. Busca conteúdo via Jina Reader (HTML → markdown)
- *  3. Pede ao Gemini para extrair JSON estruturado
+ *  3. Pede ao Gemini para extrair JSON estruturado (interpretador)
  *  4. Pós-processa para garantir link direto de produto
  *
- * Falhas individuais NÃO derrubam outros fornecedores (caller usa Promise.allSettled).
+ * Falhas individuais NÃO derrubam outros fornecedores (caller usa concorrência).
+ *
+ * Este arquivo expõe a função `scrapeViaJinaReader` (usada quando nenhum scraper
+ * específico está disponível) E a função reutilizável `extractViaJinaAndGemini`
+ * (usada pelos scrapers específicos depois de construir uma URL).
  */
 import { callGemini, isQuotaError, parseJsonFromGemini } from '../lib/gemini.js';
 import { TimeoutError } from '../lib/errors.js';
 import type { Supplier } from '../services/supplierService.js';
+import { matchingService } from '../services/matchingService.js';
 
 export interface ScrapedResult {
   found: boolean;
@@ -29,6 +34,10 @@ export interface ScrapedResult {
   errorMessage?: string;
   rawData?: unknown;
   quotaExceeded?: boolean;
+}
+
+export interface ScrapeOptions {
+  timeoutMs: number;
 }
 
 const PRODUCT_URL_PATTERNS: RegExp[] = [
@@ -65,7 +74,7 @@ function findDirectUrl(content: string, siteHost: string): string | null {
   return null;
 }
 
-async function fetchViaJina(url: string, timeoutMs: number): Promise<string> {
+export async function fetchViaJina(url: string, timeoutMs: number): Promise<string> {
   const endpoint = `https://r.jina.ai/${url}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -87,7 +96,7 @@ async function fetchViaJina(url: string, timeoutMs: number): Promise<string> {
   }
 }
 
-function buildSearchUrl(supplier: Supplier, query: string): string {
+export function buildDefaultSearchUrl(supplier: Supplier, query: string): string {
   if (supplier.search_url_template && supplier.search_url_template.includes('{q}')) {
     return supplier.search_url_template.replace('{q}', encodeURIComponent(query));
   }
@@ -95,31 +104,29 @@ function buildSearchUrl(supplier: Supplier, query: string): string {
   return `https://${host}/search?q=${encodeURIComponent(query)}`;
 }
 
-export interface ScrapeOptions {
-  timeoutMs: number;
-}
-
-export async function scrapeViaJinaReader(
+/**
+ * Função reutilizável: dada uma URL já construída e o fornecedor/query,
+ * busca conteúdo via Jina, manda para o Gemini e retorna o resultado tipado.
+ *
+ * Esta é a "engine" usada por TODOS os scrapers (específicos e genérico).
+ */
+export async function extractViaJinaAndGemini(
   supplier: Supplier,
   query: string,
+  searchUrl: string,
   opts: ScrapeOptions,
 ): Promise<ScrapedResult> {
-  const searchUrl = buildSearchUrl(supplier, query);
   const siteNoWww = supplier.site.replace(/^www\./, '').toLowerCase();
+  const jsonTpl = `{"found":true,"productName":"nome real","price":0.00,"currency":"${supplier.currency}","link":"url","sellerName":"","freight":0.00,"available":true,"warning":"","confidence":80}`;
 
-  const jsonTpl = `{"found":true,"productName":"nome real","price":0.00,"currency":"${supplier.currency}","link":"url","sellerName":"","freight":0.00,"available":true,"warning":"","matchScore":80,"confidence":80}`;
-
-  // Aplica timeout global na operação inteira
   const deadline = Date.now() + opts.timeoutMs;
 
+  // ─── 1. Buscar conteúdo via Jina ───
   let pageContent: string;
   try {
     pageContent = await fetchViaJina(searchUrl, Math.min(15_000, deadline - Date.now()));
   } catch (e) {
-    return {
-      found: false,
-      errorMessage: `Jina(busca): ${(e as Error).message}`,
-    };
+    return { found: false, errorMessage: `Jina(busca): ${(e as Error).message}` };
   }
 
   if (!pageContent || pageContent.length < 300) {
@@ -130,20 +137,23 @@ export async function scrapeViaJinaReader(
     throw new TimeoutError(`Tempo esgotado para ${supplier.name}`);
   }
 
-  const prompt = `Extrator de e-commerce. Analise a página de busca real do ${supplier.name} (${supplier.site}) e retorne o melhor produto para "${query}".
+  // ─── 2. Gemini como interpretador final ───
+  const prompt = `Você é um extrator de e-commerce. Analise a página de busca real do ${supplier.name} (${supplier.site}) e retorne o melhor produto para "${query}".
 
 CONTEÚDO:
 ---
 ${pageContent.slice(0, 7000)}
 ---
 
-REGRAS:
-1. NÃO retorne acessórios/capas/cabos/películas a menos que o usuário pediu.
+REGRAS ABSOLUTAS:
+1. NÃO retorne acessórios/capas/cabos/películas a menos que o usuário pediu na query.
 2. Se múltiplos: escolha menor preço + melhor avaliação.
-3. Extraia SOMENTE dados visíveis no texto. NÃO invente.
-4. Para "link": procure URL completa começando com http(s):// que contenha "${siteNoWww}" e que NÃO seja a página de busca/categoria. Padrões: /MLB, /dp/, -i., /p/, /item/, /product-detail/, /produto/, /products/, /pd/, /pdp/.
+3. Extraia SOMENTE dados visíveis no texto. JAMAIS invente preço, nome ou link.
+4. Se NÃO encontrar preço REAL E EXPLÍCITO no conteúdo: {"found":false,"reason":"preço não encontrado"}
+5. Para "link": procure URL completa começando com http(s):// que contenha "${siteNoWww}" e que NÃO seja a página de busca/categoria.
+   Padrões: /MLB, /dp/, -i., /p/, /item/, /product-detail/, /produto/, /products/, /pd/, /pdp/.
    Se não encontrar URL específica, use: "${searchUrl}"
-5. Se não encontrar com preço real: {"found":false,"reason":"motivo"}
+6. "confidence" deve refletir SUA confiança na extração: 90+ se nome+preço+link estão claros, 60-80 se algum dado está incerto.
 
 RETORNE APENAS este JSON:
 ${jsonTpl}`;
@@ -166,7 +176,7 @@ ${jsonTpl}`;
       };
     }
 
-    // Pós-processamento: se link do Gemini não é direct product, escaneia o conteúdo
+    // Pós-processamento: link direto de produto
     let link = String(parsed['link'] ?? '');
     if (!isProductUrl(link)) {
       const direct = findDirectUrl(pageContent, siteNoWww);
@@ -176,15 +186,27 @@ ${jsonTpl}`;
     }
     if (!link || !link.startsWith('http')) link = searchUrl;
 
+    // ─── REGRA-OURO: nunca inventar preço ───
     const price = Number(parsed['price'] ?? 0);
     if (!Number.isFinite(price) || price <= 0) {
-      return { found: false, errorMessage: 'preço inválido', rawData: parsed };
+      return { found: false, errorMessage: 'preço inválido — não encontrado com segurança', rawData: parsed };
     }
 
+    const productName = String(parsed['productName'] ?? '').slice(0, 200) || query;
     const warning = String(parsed['warning'] ?? '').trim();
+
+    // matching score calculado em JS (independente do Gemini)
+    const matchResult = matchingService.score(query, productName);
+    let combinedWarning = warning || undefined;
+    if (matchResult.isLikelyAccessory) {
+      combinedWarning = (combinedWarning ? combinedWarning + ' · ' : '') + 'Possível acessório, não o produto principal';
+    } else if (matchResult.score < 50) {
+      combinedWarning = (combinedWarning ? combinedWarning + ' · ' : '') + `Match baixo (${matchResult.score}%) — confira se é o produto certo`;
+    }
+
     return {
       found: true,
-      productName: String(parsed['productName'] ?? '').slice(0, 200) || query,
+      productName,
       price,
       currency: String(parsed['currency'] ?? supplier.currency).toUpperCase(),
       link,
@@ -192,8 +214,8 @@ ${jsonTpl}`;
       sellerName: String(parsed['sellerName'] ?? '').slice(0, 200) || undefined,
       freight: Number(parsed['freight']) || 0,
       available: parsed['available'] === false ? false : true,
-      warning: warning || undefined,
-      matchScore: Number(parsed['matchScore']) || 75,
+      warning: combinedWarning,
+      matchScore: matchResult.score,
       confidence: Number(parsed['confidence']) || 75,
       rawData: parsed,
     };
@@ -205,4 +227,17 @@ ${jsonTpl}`;
       quotaExceeded: quota,
     };
   }
+}
+
+/**
+ * Scraper genérico (Jina + Gemini) usando a URL padrão do fornecedor.
+ * Usado como fallback quando não há scraper específico.
+ */
+export async function scrapeViaJinaReader(
+  supplier: Supplier,
+  query: string,
+  opts: ScrapeOptions,
+): Promise<ScrapedResult> {
+  const searchUrl = buildDefaultSearchUrl(supplier, query);
+  return extractViaJinaAndGemini(supplier, query, searchUrl, opts);
 }

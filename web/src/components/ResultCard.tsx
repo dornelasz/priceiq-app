@@ -27,7 +27,7 @@ function isProductUrl(url?: string | null): boolean {
 export default function ResultCard({ result, supplier, isBest, priceDiffPct }: Props) {
   const [expanded, setExpanded] = useState(false);
   const r = result;
-  const supplierName = supplier?.name ?? '—';
+  const supplierName = r.supplier_name || supplier?.name || '—';
   const linkType = isProductUrl(r.product_url) ? 'product' : 'search';
   const highConf = (r.confidence ?? 0) >= 85;
   const lowConf  = (r.confidence ?? 0) > 0 && (r.confidence ?? 0) < 75;

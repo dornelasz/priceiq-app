@@ -5,7 +5,7 @@
 export type Currency = 'BRL' | 'USD' | 'EUR' | 'CNY';
 export type SupplierType = 'Nacional' | 'Internacional';
 export type ExtractionMode = 'jina_reader' | 'playwright' | 'direct_api';
-export type SearchStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type SearchStatus = 'pending' | 'running' | 'completed' | 'partial_failed' | 'failed';
 
 export interface Supplier {
   id: string;
@@ -51,6 +51,7 @@ export interface SearchResult {
   id: string;
   search_id: string;
   supplier_id: string;
+  supplier_name: string;
   product_name: string | null;
   seller_name: string | null;
   price: number | null;
@@ -83,4 +84,32 @@ export interface ApiError {
   error: string;
   message: string;
   issues?: Array<{ path: string; message: string }>;
+}
+
+// Resposta de GET /api/searches/:id/results
+export interface SearchProgress {
+  total: number;
+  completed: number;
+  failed: number;
+  running: number;
+}
+
+export interface SearchErrorEntry {
+  supplier_id: string;
+  supplier_name: string;
+  error_message: string | null;
+}
+
+export interface SearchResultsResponse {
+  search: Search;
+  progress: SearchProgress;
+  results: SearchResult[];
+  errors: SearchErrorEntry[];
+  best: SearchResult | null;
+}
+
+// Resposta de POST /api/searches
+export interface SearchCreatedResponse {
+  searchId: string;
+  status: SearchStatus;
 }

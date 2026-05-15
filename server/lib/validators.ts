@@ -30,7 +30,10 @@ export const idParamSchema = z.object({
 
 export const searchCreateSchema = z.object({
   query: z.string().min(1).max(300),
+  // Aceita ambos: supplierIds (Etapa 5 spec) E supplier_ids (compat anterior)
+  supplierIds: z.array(z.string().uuid()).optional(),
   supplier_ids: z.array(z.string().uuid()).optional(),
+  forceRefresh: z.boolean().optional().default(false),
 });
 export type SearchCreateInput = z.infer<typeof searchCreateSchema>;
 

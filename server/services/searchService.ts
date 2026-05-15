@@ -1,17 +1,30 @@
 /**
- * Orquestra uma busca:
- *  1. Cria registro em searches (com selected_supplier_ids)
- *  2. Dispara worker em background
- *  3. Worker chama scrapers em paralelo (timeout/falha isolada por fornecedor)
- *  4. Resultados de cada fornecedor são salvos em search_results
- *  5. Ao final, atualiza best_supplier / best_total_brl / completed_at
+ * searchService — orquestra uma busca SaaS de ponta a ponta.
+ *
+ * Fluxo:
+ *  1. POST /api/searches → create({query, supplierIds, forceRefresh})
+ *     • Cria registro com status='running'
+ *     • Dispara o worker em background (não bloqueia o request)
+ *     • Retorna {searchId, status} imediatamente
+ *
+ *  2. Worker para cada fornecedor:
+ *     • Se forceRefresh=false E cache válido → reaproveita (from_cache=true)
+ *     • Senão: scrapeWithFallback (específico → Jina → Playwright)
+ *     • Salva resultado em search_results (com erro se falhou)
+ *
+ *  3. Ao final, status vira:
+ *     • completed     — todos os fornecedores deram OK
+ *     • partial_failed— alguns OK, outros falharam
+ *     • failed        — todos falharam
+ *
+ *  4. GET /api/searches/:id/results → search + progress + results + errors + best
  */
 import { query, withTransaction } from '../db/client.js';
 import { NotFoundError } from '../lib/errors.js';
 import { supplierService, type Supplier } from './supplierService.js';
 import { currencyService } from './currencyService.js';
 
-export type SearchStatus = 'pending' | 'running' | 'completed' | 'failed';
+export type SearchStatus = 'pending' | 'running' | 'completed' | 'partial_failed' | 'failed';
 
 export interface Search {
   id: string;
@@ -28,6 +41,7 @@ export interface SearchResult {
   id: string;
   search_id: string;
   supplier_id: string;
+  supplier_name: string;
   product_name: string | null;
   seller_name: string | null;
   price: number | null;
@@ -61,6 +75,7 @@ interface SearchResultRow {
   id: string;
   search_id: string;
   supplier_id: string;
+  supplier_name: string | null;
   product_name: string | null;
   seller_name: string | null;
   price: string | null;
@@ -103,6 +118,7 @@ function resultToApi(row: SearchResultRow): SearchResult {
     id: row.id,
     search_id: row.search_id,
     supplier_id: row.supplier_id,
+    supplier_name: row.supplier_name ?? '',
     product_name: row.product_name,
     seller_name: row.seller_name,
     price: parseNum(row.price),
@@ -141,10 +157,16 @@ export interface InsertResultPayload {
   fromCache?: boolean;
 }
 
+export interface CreateSearchInput {
+  query: string;
+  supplierIds?: string[];
+  forceRefresh?: boolean;
+}
+
 export const searchService = {
-  async create(input: { query: string; supplierIds?: string[] }): Promise<Search> {
+  async create(input: CreateSearchInput): Promise<Search> {
     return withTransaction(async (client) => {
-      // Determina alvo
+      // Determina fornecedores-alvo
       let suppliers: Supplier[];
       if (input.supplierIds && input.supplierIds.length > 0) {
         suppliers = (await supplierService.getManyByIds(input.supplierIds)).filter(
@@ -155,18 +177,24 @@ export const searchService = {
       }
       const selectedIds = suppliers.map((s) => s.id);
 
+      // Cria com status='running' direto (worker é disparado no mesmo tick)
       const ins = await client.query<SearchRow>(
         `INSERT INTO searches (query, status, selected_supplier_ids)
-         VALUES ($1, 'pending', $2::uuid[])
+         VALUES ($1, 'running', $2::uuid[])
          RETURNING *`,
         [input.query, selectedIds],
       );
       if (!ins.rows[0]) throw new Error('Falha ao criar search');
       const search = searchToApi(ins.rows[0]);
 
-      // Dispara worker (não bloqueia o cliente)
+      // Dispara worker em background (não bloqueia o client)
       void import('../workers/priceSearchWorker.js').then(({ runSearchWorker }) => {
-        runSearchWorker({ searchId: search.id, query: input.query, suppliers }).catch((e) => {
+        runSearchWorker({
+          searchId: search.id,
+          query: input.query,
+          suppliers,
+          forceRefresh: input.forceRefresh === true,
+        }).catch((e) => {
           console.error('[worker] erro fatal', e);
         });
       });
@@ -194,23 +222,41 @@ export const searchService = {
   async getResults(searchId: string): Promise<SearchResult[]> {
     await this.get(searchId); // valida existência
     const r = await query<SearchResultRow>(
-      `SELECT * FROM search_results
-       WHERE search_id = $1
-       ORDER BY total_brl ASC NULLS LAST, confidence DESC NULLS LAST`,
+      `SELECT sr.*, s.name AS supplier_name
+       FROM search_results sr
+       JOIN suppliers s ON s.id = sr.supplier_id
+       WHERE sr.search_id = $1
+       ORDER BY (sr.error_message IS NULL) DESC,
+                sr.total_brl ASC NULLS LAST,
+                sr.confidence DESC NULLS LAST`,
       [searchId],
     );
     return r.rows.map(resultToApi);
   },
 
-  // ─── Helpers usados pelo worker ───────────────────────
+  // ─── Helpers usados pelo worker ─────────────────────────
 
   async markRunning(searchId: string): Promise<void> {
     await query(`UPDATE searches SET status = 'running' WHERE id = $1`, [searchId]);
   },
 
-  async markCompleted(searchId: string): Promise<void> {
-    // calcula melhor preço/fornecedor
-    const r = await query<{ supplier_name: string | null; total_brl: string | null }>(
+  async finalizeStatus(searchId: string): Promise<{ status: SearchStatus; best: { supplier: string | null; totalBrl: number | null } }> {
+    // Conta sucessos vs falhas
+    const counts = await query<{ found: number; failed: number }>(
+      `SELECT
+         SUM(CASE WHEN error_message IS NULL AND total_brl IS NOT NULL THEN 1 ELSE 0 END)::int AS found,
+         SUM(CASE WHEN error_message IS NOT NULL OR total_brl IS NULL THEN 1 ELSE 0 END)::int AS failed
+       FROM search_results WHERE search_id = $1`,
+      [searchId],
+    );
+    const c = counts.rows[0] ?? { found: 0, failed: 0 };
+    const status: SearchStatus =
+      c.found > 0 && c.failed === 0 ? 'completed' :
+      c.found > 0 && c.failed > 0  ? 'partial_failed' :
+      'failed';
+
+    // Calcula best
+    const best = await query<{ supplier_name: string | null; total_brl: string | null }>(
       `SELECT s.name AS supplier_name, sr.total_brl
        FROM search_results sr
        JOIN suppliers s ON s.id = sr.supplier_id
@@ -219,22 +265,19 @@ export const searchService = {
        LIMIT 1`,
       [searchId],
     );
-    const best = r.rows[0];
+    const bestRow = best.rows[0];
+    const bestSupplier = bestRow?.supplier_name ?? null;
+    const bestTotalBrl = bestRow ? parseNum(bestRow.total_brl ?? null) : null;
+
     await query(
       `UPDATE searches
-       SET status = 'completed', completed_at = NOW(),
-           best_supplier = $2, best_total_brl = $3
+       SET status = $2, completed_at = NOW(),
+           best_supplier = $3, best_total_brl = $4
        WHERE id = $1`,
-      [searchId, best?.supplier_name ?? null, best ? parseNum(best.total_brl ?? null) : null],
+      [searchId, status, bestSupplier, bestTotalBrl],
     );
-  },
 
-  async markFailed(searchId: string, reason: string): Promise<void> {
-    await query(
-      `UPDATE searches SET status = 'failed', completed_at = NOW() WHERE id = $1`,
-      [searchId],
-    );
-    console.warn('[search] marked failed', searchId, reason);
+    return { status, best: { supplier: bestSupplier, totalBrl: bestTotalBrl } };
   },
 
   async insertResult(
