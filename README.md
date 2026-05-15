@@ -4,61 +4,82 @@
 
 ## Estado atual
 
-O PriceIQ está em transição de **app single-file** para **SaaS web completo**.
+PriceIQ está em transição de **app single-file** para **SaaS web completo**. As duas versões coexistem.
 
-### Versão atual (produção)
+### Versão legada (ainda online)
 - **`index.html`** — app standalone (HTML/CSS/JS), deployado em GitHub Pages
 - **URL:** https://dornelasz.github.io/priceiq-app
-- **Features:** busca via Gemini + Jina Reader, cotação Investing.com (USD/EUR/CNY ao vivo a cada 1min), histórico local, fornecedores customizáveis
+- **Função:** referência visual e backup. NÃO é o alvo da migração SaaS.
 
-### Migração SaaS em andamento
-Estrutura sendo preparada em paralelo (sem interromper o app atual):
-- `frontend/` — frontend web modular (futura migração de `index.html`)
-- `backend/` — API REST (Node.js)
-- `infra/` — infraestrutura como código (docker-compose, IaC)
-- `docs/` — documentação de arquitetura
+### Versão SaaS (Etapas 1-4 concluídas)
+- **`server/`** — backend Fastify + Postgres + Redis (cotação, busca, suppliers, histórico)
+- **`web/`** — frontend Next.js 14 (App Router) com visual idêntico ao legado
+- **`docker-compose.yml`** — Postgres 16 + Redis 7 para dev
 
-## Estrutura de pastas
+## Estrutura
 
 ```
 priceiq-app/
-├── index.html              ← App atual em produção (NÃO TOCAR)
-├── frontend/               ← Frontend SaaS (em construção)
-├── backend/                ← Backend API (em construção)
-├── infra/                  ← Configs de infraestrutura
-├── docs/                   ← Documentação
-├── docker-compose.yml      ← Postgres + Redis para dev
-├── .env.example            ← Template de variáveis de ambiente
-└── package.json            ← Scripts e metadata
+├── index.html              App legado em produção (referência visual)
+├── web/                    ✨ Frontend Next.js 14 (Etapa 4)
+│   └── src/{app,components,lib}/
+├── server/                 ✨ Backend Fastify + Postgres + Redis (Etapas 2-3)
+│   └── {routes,services,scrapers,workers,db,lib}/
+├── infra/                  Configs de infraestrutura
+├── docs/                   Documentação de arquitetura
+├── docker-compose.yml      Postgres + Redis para dev
+└── package.json
 ```
 
-## Desenvolvimento
+## Como rodar (cloud / dev local com Docker)
 
-> ℹ️ Esta seção é para quem vai contribuir em ambiente cloud/local com Docker.
-> O app atual (`index.html`) **não precisa** de nenhum desses serviços para funcionar.
-
-### Subir ambiente local (futuro)
+> ℹ️ Não precisa rodar nada no celular. As etapas seguintes assumem ambiente cloud (Codespaces, Render, etc.) ou máquina com Docker.
 
 ```bash
-cp .env.example .env
+# 1. Subir Postgres + Redis
 docker compose up -d
+
+# 2. Backend
+cd server
+cp .env.example .env       # ajustar GEMINI_API_KEY
+npm install
+npm run db:seed            # aplica schema + insere 7 fornecedores padrão
+npm run dev                # http://localhost:3001
+
+# 3. Frontend (em outro terminal)
+cd ../web
+cp .env.example .env
+npm install
+npm run dev                # http://localhost:3000
 ```
 
-Isso sobe **Postgres** (porta 5432) e **Redis** (porta 6379).
+## Como testar pelo deploy
 
-## Roadmap de migração
+### Vercel (frontend) + Render (backend) — recomendado
+1. **Render**: provisione Postgres + Redis + Web Service apontando para `server/`. Definir `GEMINI_API_KEY`.
+2. **Vercel**: importar repo, root = `web/`, env `NEXT_PUBLIC_API_URL = https://<sua-api>.onrender.com`
+3. Acessar a URL do Vercel — visual idêntico ao `index.html`, mas dados vêm do backend.
 
-- [x] **Etapa 1** — Estrutura de pastas, configs base (este PR)
-- [ ] **Etapa 2** — Migrar `index.html` para `frontend/` modular
-- [ ] **Etapa 3** — Criar backend mínimo (cotação + cache)
-- [ ] **Etapa 4** — Persistência de usuários, histórico, fornecedores customizáveis
-- [ ] **Etapa 5** — Auth, billing, multi-tenancy
+## Roadmap
 
-## Regras imutáveis
+- [x] **Etapa 1** — Estrutura de pastas + docker-compose + READMEs
+- [x] **Etapa 2** — Backend Fastify (rotas + services + scrapers + worker)
+- [x] **Etapa 3** — Schema PostgreSQL + migrations + seed + CI
+- [x] **Etapa 4** — Frontend Next.js (visual idêntico, consome API)
+- [ ] **Etapa 5** — Auth + multi-tenancy
+- [ ] **Etapa 6** — Deploy de produção + billing
 
-⚠️ **Não alterar** a lógica de cotação Investing.com em `index.html` — está estável e validada.
-⚠️ **Não redesenhar** a UI — preservar 100% da aparência visual atual.
-⚠️ **Migração incremental** — cada etapa em PR separado, sem quebrar o app em produção.
+## Regras invioláveis
+
+- ❌ **Não alterar** a lógica de cotação Investing.com — algoritmo Promise.any com 9 tentativas está estável
+- ❌ **Não redesenhar** a UI — visual de `index.html` é a fonte da verdade
+- ❌ **Gemini só no backend** — chave em `server/.env`, nunca no frontend
+- ❌ **Migração incremental** — cada etapa em PR separado, sem quebrar o legado
+
+## CI
+
+- `.github/workflows/server-ci.yml` — backend: typecheck + build + aplica schema + migrations em Postgres 16 efêmero
+- `.github/workflows/web-ci.yml` — frontend: typecheck + lint + build Next.js
 
 ## Licença
 
