@@ -1,0 +1,75 @@
+name: server-ci
+
+# CI do backend — roda em todo PR/push que mexa em server/.
+# Não exige nada do dev local (zero ações no celular).
+on:
+  push:
+    branches: [main, saas-migration]
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-ci.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+      - '.github/workflows/server-ci.yml'
+
+jobs:
+  typecheck-and-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: priceiq
+          POSTGRES_PASSWORD: priceiq
+          POSTGRES_DB: priceiq_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U priceiq"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check (strict)
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Apply schema.sql against Postgres
+        env:
+          PGPASSWORD: priceiq
+        run: |
+          psql -h localhost -U priceiq -d priceiq_ci -f db/schema.sql
+          echo "→ Tabelas criadas:"
+          psql -h localhost -U priceiq -d priceiq_ci -c "\dt"
+
+      - name: Apply migrations against fresh DB
+        env:
+          PGPASSWORD: priceiq
+        run: |
+          psql -h localhost -U priceiq -d postgres -c "CREATE DATABASE priceiq_mig;"
+          for f in db/migrations/*.sql; do
+            echo "→ aplicando $f"
+            psql -h localhost -U priceiq -d priceiq_mig -f "$f"
+          done
+          echo "→ Tabelas após migrações:"
+          psql -h localhost -U priceiq -d priceiq_mig -c "\dt"
