@@ -65,12 +65,21 @@ CREATE TABLE IF NOT EXISTS search_results (
   warning             TEXT,                 -- aviso opcional (ex: preço a partir de, frete não confirmado)
   error_message       TEXT,                 -- se o fornecedor falhou
   from_cache          BOOLEAN NOT NULL DEFAULT FALSE,
-  collected_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  collected_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- Validação anti produto-fantasma
+  link_type           TEXT,                 -- 'product' | 'search' | 'unverified'
+  link_validated      BOOLEAN NOT NULL DEFAULT FALSE,
+  evidence_text       TEXT,                 -- trecho onde o preço foi extraído
+  source_url          TEXT,                 -- URL que foi raspada
+  source_name         TEXT,                 -- 'jina-direct' | 'gemini-interpreter' | scraper específico
+  validation_warning  TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_results_search    ON search_results(search_id);
-CREATE INDEX IF NOT EXISTS idx_results_supplier  ON search_results(supplier_id);
-CREATE INDEX IF NOT EXISTS idx_results_total_brl ON search_results(total_brl);
+CREATE INDEX IF NOT EXISTS idx_results_search       ON search_results(search_id);
+CREATE INDEX IF NOT EXISTS idx_results_supplier     ON search_results(supplier_id);
+CREATE INDEX IF NOT EXISTS idx_results_total_brl    ON search_results(total_brl);
+CREATE INDEX IF NOT EXISTS idx_results_link_type    ON search_results(link_type);
+CREATE INDEX IF NOT EXISTS idx_results_link_valid   ON search_results(link_validated);
 
 -- ─── 4. EXCHANGE_RATES ────────────────────────────────────
 -- Histórico de cotações (sempre relativas a BRL)

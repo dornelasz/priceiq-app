@@ -69,11 +69,34 @@ npm run dev                # http://localhost:3000
 - [ ] **Etapa 5** — Auth + multi-tenancy
 - [ ] **Etapa 6** — Deploy de produção + billing
 
+## Uso sem dependência de IA
+
+⚠️ **O PriceIQ não depende de Gemini ou qualquer IA para funcionar.**
+
+| Componente | Papel |
+|---|---|
+| Scrapers específicos (ML/Amazon/Shopee/Magalu/AliExpress) | Motor primário — URL otimizada por marketplace |
+| Jina Reader + extração direta (regex) | Pipeline default — sem IA |
+| Cache de resultados por fornecedor | Evita buscas repetidas |
+| Cotação Investing.com (Promise.any × 9 tentativas) | Conversão BRL — sem IA |
+| Validação de URL (`urlValidator`) | Bloqueia produto fantasma |
+| Playwright | Fallback quando Jina é bloqueado (451/403) |
+| **Gemini** | **OPCIONAL** — interpretador de texto JÁ coletado, nunca fonte primária |
+
+Por padrão, **`GEMINI_ENABLED=false`**. Se Gemini estiver ligado e a quota acabar, a busca **segue funcionando** com extração direta — uma observação discreta avisa que a IA está indisponível.
+
+Gemini NUNCA:
+- pesquisa sozinho
+- inventa preço
+- bloqueia a busca quando quota acaba
+- é necessário para a busca funcionar
+
 ## Regras invioláveis
 
 - ❌ **Não alterar** a lógica de cotação Investing.com — algoritmo Promise.any com 9 tentativas está estável
 - ❌ **Não redesenhar** a UI — visual de `index.html` é a fonte da verdade
-- ❌ **Gemini só no backend** — chave em `server/.env`, nunca no frontend
+- ❌ **Gemini é opcional e roda apenas no backend** — chave em `server/.env`, nunca no frontend
+- ❌ **Não inventar preço** — `urlValidator` + extração direta rejeitam resultados sem evidência
 - ❌ **Migração incremental** — cada etapa em PR separado, sem quebrar o legado
 
 ## CI

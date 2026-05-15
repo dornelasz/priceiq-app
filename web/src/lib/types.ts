@@ -47,6 +47,8 @@ export interface Search {
   completed_at: string | null;
 }
 
+export type LinkType = 'product' | 'search' | 'unverified';
+
 export interface SearchResult {
   id: string;
   search_id: string;
@@ -68,6 +70,13 @@ export interface SearchResult {
   error_message: string | null;
   from_cache: boolean;
   collected_at: string;
+  // Etapa 5.1 — validação anti produto fantasma
+  link_type: LinkType | null;
+  link_validated: boolean;
+  evidence_text: string | null;
+  source_url: string | null;
+  source_name: string | null;
+  validation_warning: string | null;
 }
 
 export interface RatesPayload {

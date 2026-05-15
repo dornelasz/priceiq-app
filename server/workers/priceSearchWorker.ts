@@ -82,17 +82,10 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
 
   await searchService.markRunning(searchId).catch(() => {});
 
-  let quotaTripped = false;
+  // NOTA: quota Gemini esgotada NÃO bloqueia outros fornecedores.
+  // O motor principal é extração direta (sem IA). Gemini é só fallback opcional.
 
   await withConcurrency(suppliers, config.SEARCH_CONCURRENCY, async (sup) => {
-    if (quotaTripped) {
-      await searchService.insertResult(searchId, sup, {
-        found: false,
-        errorMessage: 'Pulado — quota Gemini esgotada em fornecedor anterior',
-      }).catch(() => {});
-      return;
-    }
-
     // ─── 1. Tenta cache ─────────────────────────────────
     let scraped: ScrapedResult | null = null;
     let fromCache = false;
@@ -118,7 +111,7 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
       }
     }
 
-    if (scraped.quotaExceeded) quotaTripped = true;
+    // Gemini sem quota é warning interno; NÃO bloqueia outros fornecedores.
 
     // ─── 3. Persiste resultado ─────────────────────────
     try {
@@ -146,6 +139,13 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
           available: scraped.available,
           warning: scraped.warning,
           fromCache,
+          // Etapa 5.1 — campos de validação
+          linkType: scraped.linkType,
+          linkValidated: scraped.linkValidated ?? false,
+          evidenceText: scraped.evidenceText,
+          sourceUrl: scraped.sourceUrl,
+          sourceName: scraped.sourceName,
+          validationWarning: scraped.validationWarning,
         });
 
         // Salva no cache (só se foi busca fresh — não recache cache)
