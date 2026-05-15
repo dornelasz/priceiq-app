@@ -1,20 +1,17 @@
 # Frontend — PriceIQ
 
-Frontend modular do PriceIQ, em migração.
+> ⚠️ **Esta pasta era um placeholder da Etapa 1.** A implementação real do frontend SaaS Next.js está em [`../web/`](../web/).
 
-## Estado
+## Onde está cada coisa
 
-🚧 **Em construção** — código atual ainda está em `../index.html` na raiz.
+- **`../index.html`** — app legado single-file (ainda em produção via GitHub Pages, referência visual)
+- **`../web/`** — frontend Next.js 14 (App Router) — implementado na Etapa 4
 
-## Próximas etapas (Etapa 2)
+## Etapa 4 — implementada em `../web/`
 
-- [ ] Migrar HTML/CSS/JS de `index.html` para componentes
-- [ ] Definir stack (Vite + React/Vue/Svelte — a decidir)
-- [ ] Configurar build de produção
-- [ ] **Manter 100% da aparência visual e fluxos atuais**
-
-## Regras
-
-- A UI atual é a fonte da verdade visual. Não redesenhar.
-- Componentização incremental: telas atuais (Início, Lojas, Histórico, Config) viram componentes 1:1.
-- Cotação Investing.com NÃO é alterada — apenas migrada como está.
+- ✅ Next.js 14 + React 18 + TypeScript strict
+- ✅ Visual idêntico ao `index.html` original (CSS portado 1:1)
+- ✅ 5 telas: Início, Lojas, Histórico, Config, Resultados
+- ✅ Consome API do backend (suppliers/searches/results/rates)
+- ✅ Polling de resultados na tela Resultados
+- ✅ Toast singleton + ícones SVG inline
