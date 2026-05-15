@@ -5,7 +5,7 @@
  * (Next.js rewrite faz proxy).
  */
 import type {
-  ApiError, RatesPayload, Search, SearchResult, Supplier, SupplierInput,
+  ApiError, RatesPayload, Search, SearchCreatedResponse, SearchResult, SearchResultsResponse, Supplier, SupplierInput,
 } from './types';
 
 const BASE_URL = process.env['NEXT_PUBLIC_API_URL'] || '';
@@ -58,10 +58,10 @@ export const suppliersApi = {
 // ─── Searches ────────────────────────────────────────────
 
 export const searchesApi = {
-  create: (query: string, supplierIds?: string[]) =>
-    request<Search>('/api/searches', {
+  create: (query: string, supplierIds?: string[], forceRefresh = false) =>
+    request<SearchCreatedResponse>('/api/searches', {
       method: 'POST',
-      body: JSON.stringify({ query, supplier_ids: supplierIds }),
+      body: JSON.stringify({ query, supplierIds, forceRefresh }),
     }),
   list: (limit = 20, offset = 0) =>
     request<{ items: Search[]; limit: number; offset: number }>(
@@ -69,8 +69,11 @@ export const searchesApi = {
     ),
   get: (id: string) => request<Search>(`/api/searches/${id}`),
   results: (id: string) =>
-    request<{ search_id: string; items: SearchResult[] }>(`/api/searches/${id}/results`),
+    request<SearchResultsResponse>(`/api/searches/${id}/results`),
 };
+
+// Re-export para conveniência de quem só precisa do tipo SearchResult
+export type { SearchResult };
 
 // ─── Rates ───────────────────────────────────────────────
 

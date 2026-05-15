@@ -1,8 +1,12 @@
 /**
- * Cache simples sobre Redis.
+ * Cache simples sobre Redis com fallback em memória.
  *
  * Falhas no Redis NÃO derrubam a aplicação — em ambiente sem Redis,
  * funciona como cache em memória de fallback.
+ *
+ * Helpers específicos:
+ *  - getRatesCache / setRatesCache (chave única para cotação)
+ *  - getSupplierResult / setSupplierResult (chave por supplier+query)
  */
 import { Redis } from 'ioredis';
 import { config } from '../config.js';
@@ -34,12 +38,13 @@ function connect(): void {
     redisHealthy = false;
   });
 
-  // Conexão preguiçosa — falha não bloqueia
   redis.connect().catch((e) => {
     console.warn('[cache] Redis indisponível, usando memória:', e.message);
   });
 }
 connect();
+
+const SUPPLIER_RESULT_TTL_SECONDS = 60 * 60; // 1 hora
 
 export const cacheService = {
   async get(key: string): Promise<string | null> {
@@ -97,6 +102,20 @@ export const cacheService = {
 
   async setJson<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
     await this.set(key, JSON.stringify(value), ttlSeconds);
+  },
+
+  // ─── Helpers específicos ────────────────────────────────
+
+  /**
+   * Cache de resultado por (supplier_id, normalized_query).
+   * TTL: 1h por padrão. Permite reuso entre buscas do mesmo produto.
+   */
+  async getSupplierResult<T>(supplierId: string, normalizedQuery: string): Promise<T | null> {
+    return this.getJson<T>(`supplier_result:${supplierId}:${normalizedQuery}`);
+  },
+
+  async setSupplierResult<T>(supplierId: string, normalizedQuery: string, value: T): Promise<void> {
+    await this.setJson(`supplier_result:${supplierId}:${normalizedQuery}`, value, SUPPLIER_RESULT_TTL_SECONDS);
   },
 
   isHealthy(): boolean {

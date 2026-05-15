@@ -1,21 +1,34 @@
 /**
- * Worker in-process — executa scrapers em paralelo com limite de concorrência.
+ * Worker in-process — orquestra a busca real para uma search criada.
  *
- * Garantias:
- *  - Cada fornecedor tem timeout individual (SUPPLIER_TIMEOUT_MS).
- *  - Se um fornecedor falha, os outros continuam.
- *  - Toda falha vai pra search_results.error_message (não fica só em log).
- *  - Status da busca evolui pending → running → completed.
+ * Fluxo por fornecedor:
+ *   1. Se !forceRefresh → consulta cache (supplier_id + normalized_query)
+ *      • cache hit → grava como from_cache=true e segue
+ *   2. Cache miss / forceRefresh → scrapeWithFallback (específico → Jina → Playwright)
+ *   3. Se o scraper achou: converte para BRL, grava em search_results
+ *   4. Se NÃO achou: grava como erro/warning (NUNCA inventa preço)
+ *   5. Cache do resultado (se preço válido) para próxima busca da mesma query
+ *
+ * Concorrência controlada pelo SEARCH_CONCURRENCY.
+ * Falha isolada: se um fornecedor estourar exception, os outros continuam.
+ *
+ * Ao final, chama finalizeStatus() que define:
+ *   - completed     (todos OK)
+ *   - partial_failed (alguns OK, alguns falharam)
+ *   - failed        (nenhum OK)
  */
 import { config } from '../config.js';
 import { searchService } from '../services/searchService.js';
 import type { Supplier } from '../services/supplierService.js';
-import { scrapeViaJinaReader, type ScrapedResult } from '../scrapers/jinaReaderScraper.js';
+import { cacheService } from '../services/cacheService.js';
+import { matchingService } from '../services/matchingService.js';
+import { scrapeWithFallback, type ScrapedResult } from '../scrapers/index.js';
 
 export interface WorkerInput {
   searchId: string;
   query: string;
   suppliers: Supplier[];
+  forceRefresh: boolean;
 }
 
 async function withConcurrency<T>(
@@ -35,7 +48,6 @@ async function withConcurrency<T>(
           try {
             await task(items[i] as T, i);
           } catch (e) {
-            // task deve tratar — esse catch é só uma rede de segurança
             console.error('[worker] task escapou:', e);
           }
         }
@@ -49,31 +61,26 @@ function applyTimeout<T>(promise: Promise<T>, ms: number, label: string): Promis
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`tempo esgotado para ${label}`)), ms);
     promise.then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(timer);
-        reject(e instanceof Error ? e : new Error(String(e)));
-      },
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); },
     );
   });
 }
 
-export async function runSearchWorker(input: WorkerInput): Promise<void> {
-  const { searchId, query, suppliers } = input;
+interface CachedResult extends ScrapedResult {
+  cachedAt: string;
+}
 
-  try {
-    await searchService.markRunning(searchId);
-  } catch (e) {
-    console.error('[worker] markRunning falhou', e);
-  }
+export async function runSearchWorker(input: WorkerInput): Promise<void> {
+  const { searchId, query, suppliers, forceRefresh } = input;
+  const normalizedQuery = matchingService.cacheKey(query);
 
   if (suppliers.length === 0) {
-    await searchService.markCompleted(searchId);
+    await searchService.finalizeStatus(searchId);
     return;
   }
+
+  await searchService.markRunning(searchId).catch(() => {});
 
   let quotaTripped = false;
 
@@ -86,49 +93,72 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
       return;
     }
 
-    let result: ScrapedResult;
-    try {
-      result = await applyTimeout(
-        scrapeViaJinaReader(sup, query, { timeoutMs: config.SUPPLIER_TIMEOUT_MS }),
-        config.SUPPLIER_TIMEOUT_MS + 2000,
-        sup.name,
-      );
-    } catch (e) {
-      result = { found: false, errorMessage: (e as Error).message };
+    // ─── 1. Tenta cache ─────────────────────────────────
+    let scraped: ScrapedResult | null = null;
+    let fromCache = false;
+    if (!forceRefresh) {
+      const cached = await cacheService.getSupplierResult<CachedResult>(sup.id, normalizedQuery);
+      if (cached && cached.found && typeof cached.price === 'number' && cached.price > 0) {
+        scraped = cached;
+        fromCache = true;
+      }
     }
 
-    if (result.quotaExceeded) quotaTripped = true;
+    // ─── 2. Cache miss → scraper com fallback ──────────
+    if (!scraped) {
+      try {
+        const attempt = await applyTimeout(
+          scrapeWithFallback(sup, query, { timeoutMs: config.SUPPLIER_TIMEOUT_MS }),
+          config.SUPPLIER_TIMEOUT_MS + 2000,
+          sup.name,
+        );
+        scraped = attempt.result;
+      } catch (e) {
+        scraped = { found: false, errorMessage: (e as Error).message };
+      }
+    }
 
+    if (scraped.quotaExceeded) quotaTripped = true;
+
+    // ─── 3. Persiste resultado ─────────────────────────
     try {
-      if (result.found && result.price !== undefined && result.currency) {
-        const { brl, rate } = await searchService.convertToBrl(result.price, result.currency);
-        const freight = result.freight ?? 0;
-        const totalPrice = parseFloat((result.price + freight).toFixed(4));
-        const totalBrl =
-          rate > 0
-            ? parseFloat((totalPrice * rate).toFixed(4))
-            : brl; // sem rate (BRL), brl == price; some freight de qualquer forma
+      if (scraped.found && typeof scraped.price === 'number' && scraped.price > 0 && scraped.currency) {
+        const { brl, rate } = await searchService.convertToBrl(scraped.price, scraped.currency);
+        const freight = scraped.freight ?? 0;
+        const totalPrice = parseFloat((scraped.price + freight).toFixed(4));
+        const totalBrl = rate > 0
+          ? parseFloat((totalPrice * rate).toFixed(4))
+          : brl + freight; // fallback: BRL sem rate
+
         await searchService.insertResult(searchId, sup, {
           found: true,
-          productName: result.productName,
-          sellerName: result.sellerName,
-          price: result.price,
+          productName: scraped.productName,
+          sellerName: scraped.sellerName,
+          price: scraped.price,
           freight,
           totalPrice,
-          currency: result.currency,
+          currency: scraped.currency,
           exchangeRateUsed: rate || undefined,
           totalBrl,
-          productUrl: result.link,
-          matchScore: result.matchScore,
-          confidence: result.confidence,
-          available: result.available,
-          warning: result.warning,
-          fromCache: false,
+          productUrl: scraped.link,
+          matchScore: scraped.matchScore,
+          confidence: scraped.confidence,
+          available: scraped.available,
+          warning: scraped.warning,
+          fromCache,
         });
+
+        // Salva no cache (só se foi busca fresh — não recache cache)
+        if (!fromCache) {
+          const toCache: CachedResult = { ...scraped, cachedAt: new Date().toISOString() };
+          void cacheService.setSupplierResult(sup.id, normalizedQuery, toCache)
+            .catch((e) => console.warn('[worker] cache set falhou', e));
+        }
       } else {
+        // ─── REGRA-OURO: jamais inventar preço ──────────
         await searchService.insertResult(searchId, sup, {
           found: false,
-          errorMessage: result.errorMessage ?? 'produto não encontrado',
+          errorMessage: scraped.errorMessage ?? 'preço não encontrado com segurança',
           fromCache: false,
         });
       }
@@ -137,9 +167,10 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
     }
   });
 
+  // ─── 4. Status final ───────────────────────────────────
   try {
-    await searchService.markCompleted(searchId);
+    await searchService.finalizeStatus(searchId);
   } catch (e) {
-    console.error('[worker] markCompleted falhou', e);
+    console.error('[worker] finalizeStatus falhou', e);
   }
 }

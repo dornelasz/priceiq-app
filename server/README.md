@@ -2,6 +2,56 @@
 
 Backend Node.js + TypeScript com **Fastify**, **Postgres** e **Redis**.
 
+## 🔍 Motor de busca (Etapa 5)
+
+Pipeline para cada fornecedor (em paralelo, com timeout individual):
+
+```
+POST /api/searches { query, supplierIds?, forceRefresh? }
+        │
+        ▼ status='running' (em < 50ms)
+   ┌────────────────────────────────────────────────────┐
+   │ Worker (background) — para cada supplier:          │
+   │  ① Cache supplier_result:{id}:{normalized_q}?      │
+   │     → hit: reusa (from_cache=true)                 │
+   │  ② scraper específico (ML/Amazon/Shopee/Magalu/Ali)│
+   │  ③ jinaReaderScraper (genérico)                    │
+   │  ④ Playwright (stub — fallback)                    │
+   │     • Gemini é interpretador interno (Jina)        │
+   │  ⑤ Converte para BRL via Investing.com             │
+   │  ⑥ Salva em search_results                         │
+   └────────────────────────────────────────────────────┘
+        │
+        ▼ finalizeStatus()
+   completed | partial_failed | failed
+```
+
+**REGRA-OURO:** se preço não for encontrado com segurança, salva `error_message`/`warning` para aquele fornecedor — **NUNCA inventa preço**.
+
+### Endpoints da busca
+
+```
+POST /api/searches             { query, supplierIds?, forceRefresh? } → 202 { searchId, status }
+GET  /api/searches/:id         status + selected_supplier_ids
+GET  /api/searches/:id/results { search, progress, results, errors, best }
+```
+
+### Cache
+
+- **Chave:** `supplier_result:${supplier_id}:${normalized_query}` (Redis + memória fallback)
+- **TTL:** 1 hora
+- Resultado cacheado é marcado `from_cache=true` no DB
+- `forceRefresh=true` ignora cache
+
+### Match score
+
+`matchingService.score(query, productName)` → 0-100, baseado em:
+- Tokens da query presentes no nome (1.0 exato, 0.5 substring)
+- Bônus se query é substring exata do nome
+- Penalidade se o produto parece acessório quando a query não pediu
+
+
+
 ## 🗄️ Banco de dados (Etapa 3)
 
 ### Tabelas

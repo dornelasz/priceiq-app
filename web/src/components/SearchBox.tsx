@@ -43,7 +43,7 @@ export default function SearchBox() {
     setSubmitting(true);
     try {
       const created = await searchesApi.create(q, selectedIds.length ? selectedIds : undefined);
-      router.push(`/results/${created.id}`);
+      router.push(`/results/${created.searchId}`);
     } catch (e) {
       showToast((e as Error).message || 'Falha ao iniciar busca', 'err');
       setSubmitting(false);
