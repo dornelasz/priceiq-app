@@ -28,7 +28,12 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
   const [expanded, setExpanded] = useState(false);
   const r = result;
   const supplierName = r.supplier_name || supplier?.name || '—';
-  const linkType = isProductUrl(r.product_url) ? 'product' : 'search';
+  // link_type vem do backend (validado). Fallback para detecção local pelo padrão.
+  const linkType: 'product' | 'search' | 'unverified' =
+    r.link_type ?? (isProductUrl(r.product_url) ? 'product' : 'search');
+  const isValidatedProduct = linkType === 'product' && r.link_validated;
+  const isSearchOnly = linkType === 'search';
+  const isUnverified = linkType === 'unverified' || !r.product_url;
   const highConf = (r.confidence ?? 0) >= 85;
   const lowConf  = (r.confidence ?? 0) > 0 && (r.confidence ?? 0) < 75;
 
@@ -135,26 +140,49 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
           <p style={{ color: '#FFB800', fontSize: 12, marginBottom: 8 }}>⚠️ {r.warning}</p>
         )}
 
-        {/* Botões */}
+        {/* Botões — só mostra "Ver Produto" se link foi VALIDADO pelo backend */}
         <div className="arow">
-          <a
-            href={r.product_url ?? '#'}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={`arow-btn${linkType === 'product' ? ' primary' : ''}`}
-            title={linkType === 'product' ? 'Link direto ao produto' : 'Link para busca no site'}
-          >
-            {linkType === 'product' ? <LinkIcon size={15} /> : <SearchIcon size={15} />}
-            {linkType === 'product' ? 'Ver Produto' : 'Buscar no site'}
-          </a>
+          {isValidatedProduct ? (
+            <a
+              href={r.product_url ?? '#'}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="arow-btn primary"
+              title="Link direto ao produto (validado)"
+            >
+              <LinkIcon size={15} /> Ver Produto
+            </a>
+          ) : isSearchOnly && r.product_url ? (
+            <a
+              href={r.product_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="arow-btn"
+              title="Link para a página de busca do fornecedor"
+            >
+              <SearchIcon size={15} /> Ver busca
+            </a>
+          ) : (
+            <span
+              className="arow-btn"
+              style={{ opacity: 0.6, cursor: 'not-allowed' }}
+              title="Link direto não confirmado"
+            >
+              <Alert size={15} /> Link não confirmado
+            </span>
+          )}
           <button className="arow-btn icon-only" onClick={() => setExpanded((v) => !v)} title="Detalhes">
             <Eye size={15} />
           </button>
         </div>
 
-        {linkType !== 'product' && (
+        {/* Aviso explícito sobre status do link */}
+        {!isValidatedProduct && (
           <p style={{ color: '#FFB800', fontSize: 10, marginTop: 4 }}>
-            <Alert size={11} /> Link de busca — produto encontrado, mas sem link direto.
+            <Alert size={11} />{' '}
+            {isSearchOnly
+              ? 'Sem link direto ao produto — abrirá a página de busca do fornecedor.'
+              : r.validation_warning ?? 'Link do produto não foi validado.'}
           </p>
         )}
 

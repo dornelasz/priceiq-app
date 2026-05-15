@@ -1,15 +1,18 @@
 /**
- * Dispatcher de scrapers — escolhe a estratégia em ordem de prioridade:
+ * Dispatcher de scrapers — escolhe a estratégia em ordem de prioridade.
  *
- *  1. Scraper ESPECÍFICO do fornecedor (Mercado Livre, Amazon, Shopee, Magalu, AliExpress)
- *  2. Jina Reader genérico
- *  3. Playwright (stub por padrão; ativado via PLAYWRIGHT_ENABLED)
+ * ORDEM OFICIAL (pós-fix anti-quota-Gemini):
  *
- * Cada tentativa retorna ScrapedResult; o worker decide se prossegue para a
- * próxima estratégia (ex: se Jina falhar com "vazio", tenta Playwright se ativo).
+ *   1. Scraper ESPECÍFICO do fornecedor (Mercado Livre, Amazon, Shopee, Magalu, AliExpress)
+ *      → Internamente: Jina → extração direta → Gemini opcional
+ *   2. Jina Reader genérico (mesmo motor, URL padrão)
+ *   3. Playwright (se ativo) — usado quando Jina é bloqueado (451/403/429)
  *
- * Gemini é usado SEMPRE como interpretador final dentro de cada scraper —
- * nunca é chamado direto como estratégia.
+ * Gemini APENAS como interpretador interno e opcional, NUNCA estratégia primária.
+ * Erro de quota Gemini é warning discreto, não bloqueia a busca.
+ *
+ * Sites que bloqueiam Jina (Alibaba, etc) → fallback automático para Playwright
+ * se ativo. Sem Playwright → erro isolado naquele fornecedor.
  */
 import type { Supplier } from '../services/supplierService.js';
 import type { ScrapedResult, ScrapeOptions } from './jinaReaderScraper.js';
@@ -28,10 +31,6 @@ export type ScraperFn = (
   opts: ScrapeOptions,
 ) => Promise<ScrapedResult>;
 
-/**
- * Identifica o scraper específico do fornecedor (se houver).
- * Casa pelo campo `site` do supplier (case-insensitive, ignora www.).
- */
 export function getSpecificScraper(supplier: Supplier): ScraperFn | null {
   const site = supplier.site.toLowerCase().replace(/^www\./, '');
   if (site.includes('mercadolivre.com.br') || site.includes('mercadolibre')) return scrapeMercadoLivre;
@@ -48,15 +47,22 @@ export interface ScrapeAttempt {
 }
 
 /**
+ * Heurística: o erro indica que Jina foi BLOQUEADA (não que extração falhou).
+ * Quando bloqueada, faz sentido tentar Playwright. Quando extração apenas
+ * não achou nada, Playwright provavelmente não ajuda (mesmo conteúdo).
+ */
+function shouldFallbackToPlaywright(result: ScrapedResult): boolean {
+  if (!result || result.found) return false;
+  const msg = String(result.errorMessage ?? '').toLowerCase();
+  if (msg.includes('bloqueou') || msg.includes('http 451') || msg.includes('http 429') || msg.includes('http 403')) return true;
+  if (result.sourceName === 'jina-blocked' || result.sourceName === 'jina-fetch-error') return true;
+  if (result.sourceName === 'jina-empty') return true;
+  return false;
+}
+
+/**
  * Tenta extrair o preço seguindo a cadeia de estratégias.
- * Retorna o PRIMEIRO sucesso (found=true) OU o último erro.
- *
- * Estratégia:
- *   1. Scraper específico do fornecedor (se conhecido)
- *   2. Custom (se houver search_url_template) — equivalente ao Jina genérico
- *   3. Playwright (somente se disponível)
- *
- * Cada estratégia já usa Gemini internamente como interpretador.
+ * Retorna o PRIMEIRO sucesso OU o último erro tipado.
  */
 export async function scrapeWithFallback(
   supplier: Supplier,
@@ -65,41 +71,41 @@ export async function scrapeWithFallback(
 ): Promise<ScrapeAttempt> {
   const attempts: ScrapeAttempt[] = [];
 
-  // 1. Scraper específico
+  // 1. Scraper específico (se conhecido)
   const specific = getSpecificScraper(supplier);
   if (specific) {
     const result = await specific(supplier, query, opts);
     attempts.push({ strategy: 'specific', result });
     if (result.found) return { strategy: 'specific', result };
-    if (result.quotaExceeded) return { strategy: 'specific', result };
   }
 
-  // 2. Jina Reader / Custom (se não tem específico OU específico falhou)
+  // 2. Jina/Custom (se sem específico OU se específico falhou)
   if (!specific) {
     const result = await scrapeViaJinaReader(supplier, query, opts);
     attempts.push({ strategy: 'jina', result });
     if (result.found) return { strategy: 'jina', result };
-    if (result.quotaExceeded) return { strategy: 'jina', result };
   } else if (supplier.search_url_template) {
-    // Fornecedor específico falhou — tenta com template customizado
     const result = await scrapeCustomSupplier(supplier, query, opts);
     attempts.push({ strategy: 'custom', result });
     if (result.found) return { strategy: 'custom', result };
-    if (result.quotaExceeded) return { strategy: 'custom', result };
   }
 
-  // 3. Playwright (último recurso, só se ativo)
-  if (await isPlaywrightAvailable()) {
+  // 3. Playwright APENAS se Jina foi bloqueada/falhou no fetch
+  const lastFailure = attempts[attempts.length - 1]?.result;
+  if (lastFailure && shouldFallbackToPlaywright(lastFailure) && (await isPlaywrightAvailable())) {
     const result = await scrapeViaPlaywright(supplier, query, opts);
     attempts.push({ strategy: 'playwright', result });
     if (result.found) return { strategy: 'playwright', result };
   }
 
-  // Nenhuma estratégia funcionou — retorna o último erro com a estratégia que tentou
-  const last = attempts[attempts.length - 1];
-  return last ?? {
+  // Nenhuma estratégia teve sucesso — retorna o último resultado (com erro tipado)
+  return attempts[attempts.length - 1] ?? {
     strategy: 'jina',
-    result: { found: false, errorMessage: 'nenhuma estratégia de scraper disponível' },
+    result: {
+      found: false,
+      errorMessage: 'nenhuma estratégia de scraper disponível',
+      sourceName: 'no-strategy',
+    },
   };
 }
 

@@ -13,10 +13,27 @@ const envSchema = z.object({
 
   GEMINI_API_KEY: z.string().default(''),
   GEMINI_MODEL: z.string().default('gemini-2.5-flash-lite'),
+  // Gemini é OPCIONAL — desligado por padrão. Quando ligado, atua só como
+  // interpretador de texto JÁ coletado por scrapers. NUNCA é fonte de preço.
+  GEMINI_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
+  GEMINI_OPTIONAL: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
+  USE_GEMINI_AS_FALLBACK_ONLY: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
 
   RATES_CACHE_TTL_SECONDS: z.coerce.number().int().positive().default(60),
   SUPPLIER_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
+  SCRAPER_TIMEOUT_MS: z.coerce.number().int().positive().default(45000),
   SEARCH_CONCURRENCY: z.coerce.number().int().positive().default(5),
+  // Match score mínimo para aceitar resultado (abaixo disso → rejeita)
+  MIN_MATCH_SCORE: z.coerce.number().int().min(0).max(100).default(40),
 });
 
 const parsed = envSchema.safeParse(process.env);

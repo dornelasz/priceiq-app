@@ -58,6 +58,13 @@ export interface SearchResult {
   error_message: string | null;
   from_cache: boolean;
   collected_at: string;
+  // Etapa 5.1 — validação anti produto-fantasma
+  link_type: 'product' | 'search' | 'unverified' | null;
+  link_validated: boolean;
+  evidence_text: string | null;
+  source_url: string | null;
+  source_name: string | null;
+  validation_warning: string | null;
 }
 
 interface SearchRow {
@@ -92,6 +99,12 @@ interface SearchResultRow {
   error_message: string | null;
   from_cache: boolean;
   collected_at: Date;
+  link_type: 'product' | 'search' | 'unverified' | null;
+  link_validated: boolean;
+  evidence_text: string | null;
+  source_url: string | null;
+  source_name: string | null;
+  validation_warning: string | null;
 }
 
 function parseNum(v: string | null): number | null {
@@ -135,6 +148,12 @@ function resultToApi(row: SearchResultRow): SearchResult {
     error_message: row.error_message,
     from_cache: row.from_cache,
     collected_at: row.collected_at.toISOString(),
+    link_type: row.link_type,
+    link_validated: row.link_validated,
+    evidence_text: row.evidence_text,
+    source_url: row.source_url,
+    source_name: row.source_name,
+    validation_warning: row.validation_warning,
   };
 }
 
@@ -155,6 +174,13 @@ export interface InsertResultPayload {
   warning?: string;
   errorMessage?: string;
   fromCache?: boolean;
+  // Etapa 5.1
+  linkType?: 'product' | 'search' | 'unverified';
+  linkValidated?: boolean;
+  evidenceText?: string;
+  sourceUrl?: string;
+  sourceName?: string;
+  validationWarning?: string;
 }
 
 export interface CreateSearchInput {
@@ -289,8 +315,10 @@ export const searchService = {
       `INSERT INTO search_results
        (search_id, supplier_id, product_name, seller_name, price, freight,
         total_price, currency, exchange_rate_used, total_brl, product_url,
-        match_score, confidence, available, warning, error_message, from_cache)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+        match_score, confidence, available, warning, error_message, from_cache,
+        link_type, link_validated, evidence_text, source_url, source_name, validation_warning)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+               $18,$19,$20,$21,$22,$23)`,
       [
         searchId,
         sup.id,
@@ -309,6 +337,12 @@ export const searchService = {
         payload.warning ?? null,
         payload.errorMessage ?? null,
         payload.fromCache ?? false,
+        payload.linkType ?? null,
+        payload.linkValidated ?? false,
+        payload.evidenceText ?? null,
+        payload.sourceUrl ?? null,
+        payload.sourceName ?? null,
+        payload.validationWarning ?? null,
       ],
     );
   },
