@@ -1,18 +1,22 @@
 /**
- * Dispatcher de scrapers — escolhe a estratégia em ordem de prioridade.
+ * Universal Supplier Search Engine — dispatcher.
  *
- * ORDEM OFICIAL (pós-fix anti-quota-Gemini):
+ * O usuário NÃO escolhe estratégia. Cada fornecedor é processado pelo motor
+ * universal, que tenta automaticamente em cascata:
  *
- *   1. Scraper ESPECÍFICO do fornecedor (Mercado Livre, Amazon, Shopee, Magalu, AliExpress)
- *      → Internamente: Jina → extração direta → Gemini opcional
- *   2. Jina Reader genérico (mesmo motor, URL padrão)
- *   3. Playwright (se ativo) — usado quando Jina é bloqueado (451/403/429)
+ *   1. URL otimizada por marketplace conhecido (Mercado Livre, Amazon, Shopee,
+ *      Magalu, AliExpress) — só ajusta o formato da URL de busca.
+ *   2. Fetch direto do HTML (sites SSR/estáticos).
+ *   3. Jina Reader (sites JS-heavy / SPA).
+ *   4. Playwright (apenas se disponível e Jina foi bloqueado).
  *
- * Gemini APENAS como interpretador interno e opcional, NUNCA estratégia primária.
- * Erro de quota Gemini é warning discreto, não bloqueia a busca.
+ * Para QUALQUER conteúdo coletado, o directExtractor tenta:
+ *   - JSON-LD (schema.org Product)
+ *   - __NEXT_DATA__ e outros JSON embedded
+ *   - markdown/texto com regex de preço + URL + nome
  *
- * Sites que bloqueiam Jina (Alibaba, etc) → fallback automático para Playwright
- * se ativo. Sem Playwright → erro isolado naquele fornecedor.
+ * Gemini é OPCIONAL (desligado por padrão) e age apenas como interpretador de
+ * texto JÁ coletado. Nunca pesquisa, nunca inventa preço, nunca bloqueia a busca.
  */
 import type { Supplier } from '../services/supplierService.js';
 import type { ScrapedResult, ScrapeOptions } from './jinaReaderScraper.js';
@@ -55,8 +59,9 @@ function shouldFallbackToPlaywright(result: ScrapedResult): boolean {
   if (!result || result.found) return false;
   const msg = String(result.errorMessage ?? '').toLowerCase();
   if (msg.includes('bloqueou') || msg.includes('http 451') || msg.includes('http 429') || msg.includes('http 403')) return true;
-  if (result.sourceName === 'jina-blocked' || result.sourceName === 'jina-fetch-error') return true;
-  if (result.sourceName === 'jina-empty') return true;
+  const src = result.sourceName ?? '';
+  if (src === 'jina-blocked' || src === 'jina-fetch-error' || src === 'jina-empty') return true;
+  if (src === 'fetch-blocked' || src === 'fetch-error') return true;
   return false;
 }
 

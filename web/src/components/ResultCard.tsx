@@ -110,7 +110,9 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
             <p className="pval" style={{ fontSize: 12 }}>
               {(r.freight ?? 0) > 0
                 ? `${r.currency ?? ''} ${fmt(r.freight ?? 0)}`
-                : <span style={{ color: '#FFB800' }}>Não encontrado</span>}
+                : /frete\s+gr[áa]tis\s+confirmado/i.test(r.warning ?? '')
+                  ? <span style={{ color: '#00E5A0' }}>Grátis</span>
+                  : <span style={{ color: '#FFB800' }}>Não encontrado</span>}
             </p>
           </div>
           <div className="pcell">

@@ -86,18 +86,18 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
   // O motor principal é extração direta (sem IA). Gemini é só fallback opcional.
 
   await withConcurrency(suppliers, config.SEARCH_CONCURRENCY, async (sup) => {
-    // ─── 1. Tenta cache ─────────────────────────────────
+    // ─── 1. Tenta cache (apenas resultados válidos com preço; nunca erros) ──
     let scraped: ScrapedResult | null = null;
     let fromCache = false;
-    if (!forceRefresh) {
+    if (config.ENABLE_SEARCH_CACHE && !forceRefresh) {
       const cached = await cacheService.getSupplierResult<CachedResult>(sup.id, normalizedQuery);
-      if (cached && cached.found && typeof cached.price === 'number' && cached.price > 0) {
+      if (cached && cached.found && typeof cached.price === 'number' && cached.price > 0 && cached.productName) {
         scraped = cached;
         fromCache = true;
       }
     }
 
-    // ─── 2. Cache miss → scraper com fallback ──────────
+    // ─── 2. Cache miss → motor universal com fallback automático ──
     if (!scraped) {
       try {
         const attempt = await applyTimeout(
@@ -107,7 +107,11 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
         );
         scraped = attempt.result;
       } catch (e) {
-        scraped = { found: false, errorMessage: (e as Error).message };
+        const msg = (e as Error).message ?? '';
+        const friendly = /tempo esgotado|timed out|abort/i.test(msg)
+          ? `Timeout no fornecedor ${sup.name}`
+          : msg || 'Falha desconhecida no fornecedor';
+        scraped = { found: false, errorMessage: friendly };
       }
     }
 

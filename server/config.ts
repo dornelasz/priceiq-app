@@ -33,7 +33,15 @@ const envSchema = z.object({
   SCRAPER_TIMEOUT_MS: z.coerce.number().int().positive().default(45000),
   SEARCH_CONCURRENCY: z.coerce.number().int().positive().default(5),
   // Match score mínimo para aceitar resultado (abaixo disso → rejeita)
-  MIN_MATCH_SCORE: z.coerce.number().int().min(0).max(100).default(40),
+  // Conforme Motor Universal: <50 rejeita, 50-74 aceita com warning, ≥75 confiável
+  MIN_MATCH_SCORE: z.coerce.number().int().min(0).max(100).default(50),
+  // Score acima do qual o resultado é considerado de alta confiança (sem warning de match)
+  MATCH_SCORE_TRUSTED: z.coerce.number().int().min(0).max(100).default(75),
+  // Cache de busca por (supplier_id, normalized_query). Default ligado.
+  ENABLE_SEARCH_CACHE: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
 });
 
 const parsed = envSchema.safeParse(process.env);

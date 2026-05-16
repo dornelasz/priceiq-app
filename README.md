@@ -69,21 +69,57 @@ npm run dev                # http://localhost:3000
 - [ ] **Etapa 5** — Auth + multi-tenancy
 - [ ] **Etapa 6** — Deploy de produção + billing
 
-## Uso sem dependência de IA
+## Motor Universal de Busca
 
-⚠️ **O PriceIQ não depende de Gemini ou qualquer IA para funcionar.**
+O PriceIQ usa **um único motor universal** para pesquisar produtos em qualquer fornecedor. **O usuário não escolhe modo** (Jina, Playwright, IA, etc.) — só cadastra o fornecedor com `{q}` na URL de busca e o motor faz o resto.
 
-| Componente | Papel |
-|---|---|
-| Scrapers específicos (ML/Amazon/Shopee/Magalu/AliExpress) | Motor primário — URL otimizada por marketplace |
-| Jina Reader + extração direta (regex) | Pipeline default — sem IA |
-| Cache de resultados por fornecedor | Evita buscas repetidas |
-| Cotação Investing.com (Promise.any × 30 tentativas, fonte única) | Conversão BRL — sem IA |
-| Validação de URL (`urlValidator`) | Bloqueia produto fantasma |
-| Playwright | Fallback quando Jina é bloqueado (451/403) |
-| **Gemini** | **OPCIONAL** — interpretador de texto JÁ coletado, nunca fonte primária |
+**Cadastro mínimo de fornecedor:** nome, site, URL de busca (com `{q}`), moeda, país/tipo, ativo. Sem campos de "modo de extração" no formulário.
 
-Por padrão, **`GEMINI_ENABLED=false`**. Se Gemini estiver ligado e a quota acabar, a busca **segue funcionando** com extração direta — uma observação discreta avisa que a IA está indisponível.
+**Cadeia interna (cascata automática)** — escondida do usuário:
+1. URL otimizada por marketplace conhecido (ML, Amazon, Shopee, Magalu, AliExpress).
+2. **fetch direto** do HTML (sites SSR / HTML estático).
+3. **Jina Reader** (sites JS-heavy / SPA).
+4. **Playwright** (apenas se instalado e os anteriores foram bloqueados).
+
+**Parser universal** (sem IA) — tenta em ordem:
+- JSON-LD `schema.org/Product` (`<script type="application/ld+json">`)
+- `__NEXT_DATA__` e outros JSON embedded
+- Markdown / texto visível com regex de preço + URL + nome
+
+**Critérios de aceitação:**
+- Preço precisa ter contexto válido (rejeita avaliação `4.8`, capacidade `128GB`, parcelas `12x`, anos `2024`, etc.).
+- Resultado precisa ter `evidence_text` (trecho onde o preço foi encontrado). Sem evidência → rejeitado.
+- Match score: **≥75 confiável · 50–74 com warning · <50 rejeitado**.
+- Acessórios (capinha, película, cabo, etc.) são rejeitados quando a busca é por produto principal.
+
+**Frete:**
+- "Frete grátis" detectado → `freight=0`, warning "Frete grátis confirmado".
+- Valor explícito → `freight=X`.
+- Não encontrado → `freight=0`, warning "Frete não encontrado; total pode mudar no checkout" e confidence reduzida.
+
+**Validação de link (anti produto fantasma):**
+- `link_type="product"` + `link_validated=true` → botão **Ver Produto**.
+- `link_type="search"` → botão **Ver busca** (nunca "Ver Produto").
+- `link_type="unverified"` ou sem link → botão desabilitado, aviso discreto.
+- Padrões reconhecidos: `/MLB`, `/dp/ASIN`, `-i.shopid.itemid`, `/p/`, `/item/`, `/product-detail/`, `/produto/`, `/products/...`.
+
+**Cache:**
+- Chave: `supplier_id + normalized_query`. TTL 1h.
+- Reaproveita apenas resultados válidos (com preço). Erros nunca são cacheados.
+- `forceRefresh=true` ignora cache.
+
+**Erros isolados por fornecedor:** falha em um fornecedor não afeta os outros. Mensagens padronizadas: "Preço não encontrado com segurança", "Link de produto não validado", "Fornecedor bloqueou leitura", "Produto encontrado parece ser acessório", "Página não retornou conteúdo suficiente", "Timeout no fornecedor".
+
+**Gemini é opcional** (`GEMINI_ENABLED=false` por padrão). Quando ligado, atua apenas como interpretador de texto já coletado — nunca pesquisa, nunca inventa preço, nunca bloqueia a busca. Sem chave/quota → busca segue normal.
+
+## Frontend principal
+
+- **Versão SaaS:** `web/` (Next.js 14, App Router) — frontend ativo da migração SaaS.
+- **Legado:** `index.html` — backup/referência visual no GitHub Pages, **não** consome o backend; não interfere na versão SaaS.
+
+## Backend principal
+
+- **`server/`** — Fastify + Postgres + Redis. Expõe `/api/searches`, `/api/searches/:id/results`, `/api/suppliers`, `/api/rates`.
 
 ## Cotação automática
 

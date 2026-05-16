@@ -1,10 +1,12 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import ProgressSearch from '@/components/ProgressSearch';
 import ResultCard from '@/components/ResultCard';
+import { Refresh } from '@/components/Icons';
+import { showToast } from '@/components/Toast';
 import { searchesApi, suppliersApi } from '@/lib/api';
 import type { SearchResultsResponse, Supplier } from '@/lib/types';
 
@@ -12,11 +14,13 @@ const POLL_INTERVAL_MS = 2_500;
 
 export default function ResultsPage() {
   const params = useParams<{ searchId: string }>();
+  const router = useRouter();
   const searchId = params?.searchId ?? '';
 
   const [data, setData] = useState<SearchResultsResponse | null>(null);
   const [suppliers, setSuppliers] = useState<Map<string, Supplier>>(new Map());
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -74,6 +78,20 @@ export default function ResultsPage() {
   const inProgress = search.status === 'pending' || search.status === 'running';
   const bestPrice = best?.total_brl ?? 0;
 
+  async function onForceRefresh() {
+    if (refreshing || inProgress) return;
+    setRefreshing(true);
+    try {
+      const supplierIds = search.selected_supplier_ids;
+      const created = await searchesApi.create(search.query, supplierIds, true);
+      showToast('Buscando novamente sem cache…');
+      router.push(`/results/${created.searchId}`);
+    } catch (e) {
+      showToast((e as Error).message, 'err');
+      setRefreshing(false);
+    }
+  }
+
   return (
     <>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 18, gap: 10 }}>
@@ -87,9 +105,23 @@ export default function ResultsPage() {
               : `${results.length} resultado${results.length !== 1 ? 's' : ''}${errors.length ? ` · ${errors.length} erro${errors.length !== 1 ? 's' : ''}` : ''}`}
           </p>
         </div>
-        <Link href="/" className="btn btn-g btn-sm" style={{ width: 'auto', flexShrink: 0 }}>
-          Nova busca
-        </Link>
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+          {!inProgress && (
+            <button
+              type="button"
+              className="btn btn-g btn-sm"
+              style={{ width: 'auto' }}
+              onClick={onForceRefresh}
+              disabled={refreshing}
+              title="Refazer a busca ignorando o cache"
+            >
+              <Refresh size={14} /> {refreshing ? 'Atualizando…' : 'Atualizar agora'}
+            </button>
+          )}
+          <Link href="/" className="btn btn-g btn-sm" style={{ width: 'auto' }}>
+            Nova busca
+          </Link>
+        </div>
       </div>
 
       {inProgress && (

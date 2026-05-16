@@ -21,11 +21,12 @@ const STOPWORDS = new Set([
 ]);
 
 const ACCESSORY_HINTS = [
-  'capinha', 'capa', 'case', 'película', 'pelicula', 'protetor',
-  'cabo usb', 'cabo lightning', 'cabo', 'carregador', 'fonte',
-  'adaptador', 'suporte', 'bateria extra', 'compatível', 'compativel',
-  'para iphone', 'para samsung', 'para xiaomi', 'genérico', 'generico',
-  'similar', 'replica', 'réplica',
+  'capinha', 'capa', 'case', 'cover', 'película', 'pelicula', 'protetor',
+  'cabo usb', 'cabo lightning', 'cabo tipo c', 'cabo', 'carregador', 'fonte',
+  'adaptador', 'suporte', 'bateria extra', 'compatível com', 'compativel com',
+  'para iphone', 'para samsung', 'para xiaomi', 'para motorola', 'para apple',
+  'genérico', 'generico', 'similar', 'replica', 'réplica',
+  'fone para', 'fone bluetooth para', 'kit acessório', 'kit acessorio',
 ];
 
 function normalize(s: string): string {
