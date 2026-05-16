@@ -163,7 +163,7 @@ const ST={
   query:"",selIds:[],results:[],meta:null,insight:null,
   searching:false,aiLoading:false,
   progDone:0,progTotal:0,progCur:"",
-  expandId:null,view:"home",
+  expandId:null,manualFormId:null,view:"home",
   sfMode:null,sfId:null,sfData:null,
   rateLoading:false,
   searchErrors:[]
@@ -1442,6 +1442,8 @@ function buildCards(){
     const isHighConf=r.status===SearchStatus.VERIFIED;
     const diff=hasPrice&&bestBRL&&!isBestPrice?((r.brl-bestBRL)/bestBRL*100).toFixed(1):null;
     const isExp=ST.expandId===r.id;
+    const isBlockedOrError=r.status===SearchStatus.BLOCKED||r.status===SearchStatus.ERROR;
+    const showManualForm=isBlockedOrError&&ST.manualFormId===r.id;
     const resell=hasPrice?fmt((r.brl||0)*(1+ST.settings.margin/100)):null;
 
     // Status badge (always present)
@@ -1554,10 +1556,54 @@ function buildCards(){
             ${linkBtnIcon}
             ${linkBtnLabel}
           </a>
+          ${isBlockedOrError?`<button class="arow-btn" data-rid="${esc(r.id)}" onclick="toggleManualForm(this)" title="Inserir resultado manualmente" style="color:#00D4FF;border-color:#00D4FF44">${ico.edit} Inserir manual</button>`:""}
           <button class="arow-btn icon-only" data-rid="${esc(r.id)}" onclick="toggleExpand(this)" title="Detalhes">${ico.eye}</button>
           <button class="arow-btn icon-only danger" data-rid="${esc(r.id)}" onclick="delResult(this)" title="Remover">${ico.trash}</button>
         </div>
         ${linkWarn}
+        ${showManualForm?`<div class="manual-entry-form" style="margin-top:10px;padding:14px;background:#0D1320;border-radius:10px;border:1px solid #1C2A3A">
+          <p style="color:#00D4FF;font-size:12px;font-weight:700;margin-bottom:10px">${ico.edit} Inserir resultado manual — ${esc(r.supplier)}</p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+            <div style="grid-column:1/-1">
+              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">NOME DO PRODUTO *</label>
+              <input name="mname" type="text" placeholder="ex: iPhone 14 128GB" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+            </div>
+            <div>
+              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">PREÇO *</label>
+              <input name="mprice" type="text" inputmode="decimal" placeholder="ex: 3999.90" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+            </div>
+            <div>
+              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">MOEDA</label>
+              <select name="mcur" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+                <option value="BRL">BRL (R$)</option>
+                <option value="USD">USD ($)</option>
+                <option value="EUR">EUR (€)</option>
+                <option value="CNY">CNY (¥)</option>
+              </select>
+            </div>
+            <div>
+              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">FRETE (0 = grátis)</label>
+              <input name="mfreight" type="text" inputmode="decimal" placeholder="ex: 29.90 ou 0" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+            </div>
+            <div style="grid-column:1/-1">
+              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">LINK DO PRODUTO</label>
+              <input name="mlink" type="url" placeholder="https://..." style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+            </div>
+            <div style="grid-column:1/-1">
+              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">OBSERVAÇÃO</label>
+              <input name="mnote" type="text" placeholder="ex: promoção Black Friday" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+            </div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="arow-btn primary" data-rid="${esc(r.id)}" onclick="submitManualEntry(this)" style="flex:1">
+              ${ico.check} Confirmar
+            </button>
+            <button class="arow-btn" data-rid="${esc(r.id)}" onclick="toggleManualForm(this)">
+              Cancelar
+            </button>
+          </div>
+          <p style="color:#4A5568;font-size:10px;margin-top:8px">${ico.info} Resultado marcado como "BUSCA MANUAL" — não verificado automaticamente.</p>
+        </div>`:""}
         <p style="color:#4A5568;font-size:10px;margin-top:8px;text-align:right">${fmtDate(r.ts)}</p>
       </div>
       ${expandedHTML}
@@ -1603,6 +1649,76 @@ function delResult(btn){
   const rid=btn.getAttribute("data-rid");
   ST.results=ST.results.filter(r=>r.id!==rid);
   renderResultCards();
+}
+
+function toggleManualForm(btn){
+  const rid=btn.getAttribute("data-rid");
+  ST.manualFormId=ST.manualFormId===rid?null:rid;
+  renderResultCards();
+}
+
+function submitManualEntry(btn){
+  const rid=btn.getAttribute("data-rid");
+  const orig=ST.results.find(r=>r.id===rid);
+  if(!orig)return;
+  const form=btn.closest(".manual-entry-form");
+  const name=(form.querySelector("[name=mname]").value||"").trim();
+  const priceRaw=(form.querySelector("[name=mprice]").value||"").trim().replace(",",".");
+  const cur=(form.querySelector("[name=mcur]").value||"BRL");
+  const link=(form.querySelector("[name=mlink]").value||"").trim();
+  const freightRaw=(form.querySelector("[name=mfreight]").value||"").trim().replace(",",".");
+  const note=(form.querySelector("[name=mnote]").value||"").trim();
+  if(!name){toast("Nome do produto é obrigatório","err");return;}
+  const price=parseFloat(priceRaw);
+  if(!price||price<=0){toast("Preço inválido — use ponto como separador decimal","err");return;}
+  const s=ST.settings;
+  let rateUsed=1;
+  if(cur==="USD")rateUsed=s.usd||5.10;
+  else if(cur==="EUR")rateUsed=s.eur||5.55;
+  else if(cur==="CNY")rateUsed=s.cny||0.70;
+  const freight=parseFloat(freightRaw)||0;
+  const priceBRL=parseFloat((price*rateUsed).toFixed(2));
+  const freightBRL=parseFloat((freight*rateUsed).toFixed(2));
+  const freeShip=freightRaw.toLowerCase().includes("grat")||freightRaw==="0"||freightRaw==="0.00";
+  const brl=priceBRL+(freeShip?0:freightBRL);
+  const ts=new Date().toISOString();
+  const manualResult={
+    id:"m"+Date.now(),
+    status:SearchStatus.MANUAL_SEARCH,
+    statusLabel:STATUS_LABEL.manual_search,
+    statusColor:STATUS_COLOR.manual_search,
+    statusRank:STATUS_RANK.manual_search,
+    reason:"Inserido manualmente"+(note?" — "+note:""),
+    query:orig.query,
+    supplier:orig.supplier,supId:orig.supId,
+    productName:name,
+    price,currency:cur,originalCurrency:cur,
+    priceBRL,freight,freightNote:freeShip?"grátis confirmado":freight>0?String(freight):"não encontrado",
+    freightBRL,brl,
+    exchangePair:cur==="BRL"?"BRL":cur+"/BRL",
+    exchangeRateUsed:rateUsed,
+    rateSource:s.rateSource||"Investing.com",rateTime:s.rateTime||"",rateTimestamp:s.rateTimestamp||0,
+    link:link||orig.manualSearchUrl||"",
+    linkType:link?"manual":"search",
+    linkValidated:false,
+    manualSearchUrl:orig.manualSearchUrl||"",
+    evidence:"Inserido manualmente pelo usuário",
+    matchScore:0,confidence:0,totalConfidence:0,
+    available:true,freeShip,
+    sellerName:"",productRating:"",productReviews:0,sellers:1,
+    priceMin:price,priceMax:price,priceMinBrl:priceBRL,priceMaxBrl:priceBRL,
+    needsManualFreightCheck:false,
+    priceSourceText:"Manual",
+    warnings:note?[note]:[],
+    note:note||"Inserido manualmente",
+    ts,isManual:true,
+  };
+  ST.results=ST.results.filter(r=>r.id!==rid);
+  ST.results.push(manualResult);
+  ST.results.sort(compareResults);
+  ST.manualFormId=null;
+  renderResultCards();
+  toast("Resultado manual adicionado");
 }
 function saveSearch(){
   if(!ST.meta||!ST.results.length){toast("Nada para salvar","err");return}
