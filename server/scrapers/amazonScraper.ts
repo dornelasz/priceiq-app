@@ -6,7 +6,7 @@
  * Gemini como interpretador final.
  */
 import type { Supplier } from '../services/supplierService.js';
-import { extractViaJinaAndGemini, type ScrapeOptions, type ScrapedResult } from './jinaReaderScraper.js';
+import { extractViaJina, type ScrapeOptions, type ScrapedResult } from './jinaReaderScraper.js';
 
 function buildAmazonSearchUrl(supplier: Supplier, query: string): string {
   const host = supplier.site.toLowerCase().includes('amazon.com.br')
@@ -21,7 +21,7 @@ export async function scrapeAmazon(
   opts: ScrapeOptions,
 ): Promise<ScrapedResult> {
   const searchUrl = buildAmazonSearchUrl(supplier, query);
-  const result = await extractViaJinaAndGemini(supplier, query, searchUrl, opts);
+  const result = await extractViaJina(supplier, query, searchUrl, opts);
 
   // Amazon costuma dar CAPTCHA — se conteúdo for muito curto/erro, marca warning específico
   if (!result.found && result.errorMessage?.includes('Jina')) {

@@ -9,19 +9,14 @@
  *      → Funciona quando o site é JS-heavy mas tolera o crawler do Jina.
  *   3. directExtractor — Motor Universal de Extração (JSON-LD, __NEXT_DATA__, markdown)
  *      → FONTE PRIMÁRIA de preço/produto/URL. Sem IA.
- *   4. Gemini (OPCIONAL, desligado por padrão) — apenas interpretador de
- *      texto já coletado. Nunca pesquisa, nunca inventa, nunca bloqueia.
- *   5. urlValidator — valida estrutural + semanticamente o link antes
+ *   4. urlValidator — valida estrutural + semanticamente o link antes
  *      de aceitar como link_type="product".
  *
  * Garantias:
- *   - Funciona com GEMINI_ENABLED=false (default).
- *   - Quota/429/sem chave → warning interno, busca continua.
  *   - Toda URL é validada (precisa aparecer na fonte).
  *   - Preço inválido OU URL inventada → resultado rejeitado com error_message claro.
  */
 import { config } from '../config.js';
-import { callGemini, isQuotaError, parseJsonFromGemini } from '../lib/gemini.js';
 import { TimeoutError } from '../lib/errors.js';
 import type { Supplier } from '../services/supplierService.js';
 import { matchingService } from '../services/matchingService.js';
@@ -48,8 +43,6 @@ export interface ScrapedResult {
   sourceUrl?: string;
   sourceName?: string;
   rawData?: unknown;
-  /** Indica que Gemini falhou por quota — usado para warning discreto na UI */
-  geminiUnavailable?: boolean;
 }
 
 export interface ScrapeOptions {
@@ -133,141 +126,18 @@ export function buildDefaultSearchUrl(supplier: Supplier, query: string): string
 }
 
 /**
- * Tenta extrair via Gemini APENAS como interpretador do conteúdo Jina já coletado.
- * NUNCA é a fonte primária. NUNCA vê só a query — sempre vê o conteúdo real.
- * Falhas de quota são SILENCIOSAS (warning interno, não erro fatal).
- */
-async function tryGeminiInterpreter(
-  supplier: Supplier,
-  query: string,
-  pageContent: string,
-  searchUrl: string,
-  timeoutMs: number,
-): Promise<DirectExtractResult & { geminiUnavailable?: boolean }> {
-  // Gate de feature flag — se desligado, nem tenta
-  if (!config.GEMINI_ENABLED || !config.GEMINI_API_KEY) {
-    return {
-      found: false,
-      errorMessage: 'Gemini desligado (extração direta não encontrou resultado seguro)',
-      sourceUrl: searchUrl,
-      sourceName: 'no-ai',
-    };
-  }
-
-  const siteNoWww = supplier.site.replace(/^www\./, '').toLowerCase();
-  const jsonTpl = `{"found":true,"productName":"nome real","price":0.00,"currency":"${supplier.currency}","link":"url","sellerName":"","freight":0.00,"available":true,"evidenceText":"trecho onde achou","confidence":80}`;
-
-  const prompt = `Você é APENAS um INTERPRETADOR. NÃO pesquise. NÃO invente nada.
-Use SOMENTE o conteúdo fornecido abaixo (já coletado por scraper) para extrair o produto que casa com a query do usuário.
-
-QUERY: "${query}"
-FORNECEDOR: ${supplier.name} (${supplier.site})
-
-CONTEÚDO COLETADO (truncado em 7000 chars):
----
-${pageContent.slice(0, 7000)}
----
-
-REGRAS ABSOLUTAS:
-1. SOMENTE dados que estão LITERALMENTE no conteúdo. JAMAIS invente preço/nome/link.
-2. NÃO retorne acessórios (capa/película/cabo) salvo se a query pedir.
-3. "link" precisa ser uma URL que APARECE no conteúdo, com domínio "${siteNoWww}".
-   Se não houver URL de produto específica visível, retorne "${searchUrl}".
-4. "evidenceText" precisa ser um trecho EXATO do conteúdo onde você viu o preço (60-200 chars).
-5. Se NÃO encontrar preço REAL e EXPLÍCITO no conteúdo, retorne {"found":false,"reason":"motivo"}.
-
-RETORNE APENAS este JSON:
-${jsonTpl}`;
-
-  try {
-    const raw = await callGemini({ prompt, maxTokens: 1000, useSearch: false, timeoutMs });
-    const parsed = parseJsonFromGemini(raw);
-    if (!parsed) {
-      return {
-        found: false,
-        errorMessage: 'Gemini retornou JSON inválido',
-        sourceUrl: searchUrl,
-        sourceName: 'gemini-interpreter',
-      };
-    }
-    if (parsed['found'] === false) {
-      return {
-        found: false,
-        errorMessage: typeof parsed['reason'] === 'string' ? parsed['reason'] : 'Gemini não encontrou produto',
-        sourceUrl: searchUrl,
-        sourceName: 'gemini-interpreter',
-      };
-    }
-    const price = Number(parsed['price'] ?? 0);
-    if (!Number.isFinite(price) || price <= 0) {
-      return {
-        found: false,
-        errorMessage: 'Gemini retornou preço inválido',
-        sourceUrl: searchUrl,
-        sourceName: 'gemini-interpreter',
-      };
-    }
-    const name = String(parsed['productName'] ?? '').slice(0, 200) || query;
-    const match = matchingService.score(query, name);
-    return {
-      found: true,
-      productName: name,
-      price,
-      currency: String(parsed['currency'] ?? supplier.currency).toUpperCase(),
-      link: String(parsed['link'] ?? '') || undefined,
-      sellerName: String(parsed['sellerName'] ?? '') || undefined,
-      freight: Number(parsed['freight']) || 0,
-      available: parsed['available'] === false ? false : true,
-      evidenceText: String(parsed['evidenceText'] ?? '').slice(0, 500) || undefined,
-      sourceUrl: searchUrl,
-      sourceName: 'gemini-interpreter',
-      matchScore: match.score,
-      confidence: Number(parsed['confidence']) || 60,
-    };
-  } catch (e) {
-    if (isQuotaError(e)) {
-      // ⚠️ Quota Gemini esgotada — NÃO é falha global, é warning discreto.
-      return {
-        found: false,
-        errorMessage: 'Interpretação por IA indisponível (quota)',
-        sourceUrl: searchUrl,
-        sourceName: 'gemini-interpreter',
-        geminiUnavailable: true,
-      };
-    }
-    return {
-      found: false,
-      errorMessage: `Gemini: ${(e as Error).message}`,
-      sourceUrl: searchUrl,
-      sourceName: 'gemini-interpreter',
-    };
-  }
-}
-
-/**
  * Engine reutilizável: dado um conteúdo (HTML cru ou markdown Jina), faz
- * extração DIRETA universal + Gemini opcional + validação de link.
+ * extração DIRETA universal + validação de link.
  */
 async function processContent(
   supplier: Supplier,
   query: string,
   searchUrl: string,
   content: string,
-  deadline: number,
+  _deadline: number,
   sourceTag: string,
 ): Promise<ScrapedResult> {
-  const directResult = extractDirectly(supplier, query, content, searchUrl);
-
-  let result: DirectExtractResult & { geminiUnavailable?: boolean } = directResult;
-  let geminiUnavailable = false;
-  if (!directResult.found && config.GEMINI_ENABLED && config.GEMINI_API_KEY) {
-    const remaining = Math.max(5_000, deadline - Date.now());
-    const geminiResult = await tryGeminiInterpreter(supplier, query, content, searchUrl, remaining);
-    if (geminiResult.geminiUnavailable) geminiUnavailable = true;
-    if (geminiResult.found) {
-      result = geminiResult;
-    }
-  }
+  const result = extractDirectly(supplier, query, content, searchUrl);
 
   if (!result.found || !result.price || result.price <= 0 || !result.productName) {
     return {
@@ -275,7 +145,6 @@ async function processContent(
       errorMessage: result.errorMessage ?? 'Preço não encontrado com segurança',
       sourceUrl: searchUrl,
       sourceName: result.sourceName ?? sourceTag,
-      geminiUnavailable: geminiUnavailable || undefined,
     };
   }
 
@@ -287,7 +156,6 @@ async function processContent(
       sourceUrl: searchUrl,
       sourceName: result.sourceName ?? sourceTag,
       evidenceText: result.evidenceText,
-      geminiUnavailable: geminiUnavailable || undefined,
     };
   }
 
@@ -297,7 +165,6 @@ async function processContent(
       errorMessage: 'Preço encontrado sem evidência textual — rejeitado para evitar produto fantasma',
       sourceUrl: searchUrl,
       sourceName: result.sourceName ?? sourceTag,
-      geminiUnavailable: geminiUnavailable || undefined,
     };
   }
 
@@ -310,7 +177,6 @@ async function processContent(
       sourceUrl: searchUrl,
       sourceName: result.sourceName ?? sourceTag,
       evidenceText: result.evidenceText,
-      geminiUnavailable: geminiUnavailable || undefined,
     };
   }
 
@@ -327,7 +193,6 @@ async function processContent(
   if (result.matchScore !== undefined && result.matchScore >= config.MIN_MATCH_SCORE && result.matchScore < config.MATCH_SCORE_TRUSTED) {
     warnings.push(`Match parcial (${result.matchScore}%) — confirme nome no link antes de comprar.`);
   }
-  if (geminiUnavailable) warnings.push('Interpretação por IA indisponível; usando extração direta.');
 
   return {
     found: true,
@@ -347,7 +212,6 @@ async function processContent(
     evidenceText: result.evidenceText,
     sourceUrl: searchUrl,
     sourceName: result.sourceName ?? sourceTag,
-    geminiUnavailable: geminiUnavailable || undefined,
   };
 }
 
@@ -356,7 +220,7 @@ async function processContent(
  * Em cada passo, faz extração via directExtractor (JSON-LD, __NEXT_DATA__, markdown).
  * Retorna o primeiro resultado VÁLIDO ou o erro padronizado mais informativo.
  */
-export async function extractViaJinaAndGemini(
+export async function extractViaJina(
   supplier: Supplier,
   query: string,
   searchUrl: string,
@@ -442,5 +306,5 @@ export async function scrapeViaJinaReader(
   opts: ScrapeOptions,
 ): Promise<ScrapedResult> {
   const searchUrl = buildDefaultSearchUrl(supplier, query);
-  return extractViaJinaAndGemini(supplier, query, searchUrl, opts);
+  return extractViaJina(supplier, query, searchUrl, opts);
 }

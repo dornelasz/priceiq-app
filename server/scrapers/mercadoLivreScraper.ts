@@ -6,7 +6,7 @@
  * delega a extração para o engine genérico Jina + Gemini.
  */
 import type { Supplier } from '../services/supplierService.js';
-import { extractViaJinaAndGemini, type ScrapeOptions, type ScrapedResult } from './jinaReaderScraper.js';
+import { extractViaJina, type ScrapeOptions, type ScrapedResult } from './jinaReaderScraper.js';
 
 function buildMlSlugUrl(query: string): string {
   const slug = query
@@ -26,5 +26,5 @@ export async function scrapeMercadoLivre(
 ): Promise<ScrapedResult> {
   // ML aceita tanto slug quanto search?as= — slug é melhor indexado
   const searchUrl = buildMlSlugUrl(query);
-  return extractViaJinaAndGemini(supplier, query, searchUrl, opts);
+  return extractViaJina(supplier, query, searchUrl, opts);
 }

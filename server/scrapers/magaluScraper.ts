@@ -5,7 +5,7 @@
  * do Magalu) então Jina costuma extrair bem.
  */
 import type { Supplier } from '../services/supplierService.js';
-import { extractViaJinaAndGemini, type ScrapeOptions, type ScrapedResult } from './jinaReaderScraper.js';
+import { extractViaJina, type ScrapeOptions, type ScrapedResult } from './jinaReaderScraper.js';
 
 function buildMagaluSearchUrl(query: string): string {
   const slug = query
@@ -24,5 +24,5 @@ export async function scrapeMagalu(
   opts: ScrapeOptions,
 ): Promise<ScrapedResult> {
   const searchUrl = buildMagaluSearchUrl(query);
-  return extractViaJinaAndGemini(supplier, query, searchUrl, opts);
+  return extractViaJina(supplier, query, searchUrl, opts);
 }

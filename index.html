@@ -674,7 +674,195 @@ function isUnwantedAccessory(name,queryMeta){
 }
 
 // ══════════════════════════════════════════════════════
-// BUSCA — Jina Reader + Gemini (sem grounding obrigatório)
+// EXTRATOR UNIVERSAL — sem IA (port do directExtractor.ts)
+// ══════════════════════════════════════════════════════
+
+function normStr(s){
+  return(s||"").toLowerCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g,"")
+    .replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
+}
+function scoreMatchDirect(query,name){
+  const qN=normStr(query),nN=normStr(name);
+  const toks=qN.split(" ").filter(t=>t.length>=2);
+  if(!toks.length)return{score:0,isLikelyAccessory:false};
+  const matched=toks.filter(t=>nN.includes(t)).length;
+  const HINTS=["capinha","capa case","pelicula","protetor","cabo usb","carregador","fonte","adaptador","suporte","bateria extra","compativel","generico","replica"];
+  const isLikelyAccessory=HINTS.some(h=>nN.includes(normStr(h)));
+  return{score:Math.round(matched/toks.length*100),isLikelyAccessory};
+}
+function parseBRL(s){return parseFloat((s||"").replace(/\./g,"").replace(",","."))}
+function parseEN(s){return parseFloat((s||"").replace(/,/g,""))}
+function priceRangeFor(cur){
+  if(cur==="BRL")return[5,500000];
+  if(cur==="USD"||cur==="EUR")return[1,100000];
+  if(cur==="CNY")return[3,500000];
+  return[1,1000000];
+}
+function looksLikeNonPriceCtx(content,pos,matchLen){
+  const before=content.slice(Math.max(0,pos-60),pos).toLowerCase();
+  const after=content.slice(pos+matchLen,Math.min(content.length,pos+matchLen+30)).toLowerCase();
+  if(/\b(avalia[cç][aã]o|review|nota|estrelas?|rating)\b[^\d]{0,8}$/.test(before))return true;
+  if(/^\s*(estrelas?|de\s+5|avalia[cç][oõ]es|reviews?)/.test(after))return true;
+  if(/^\s*(vendidos?|unidades?\s+vendidas?|sold)/.test(after))return true;
+  if(/^\s*(gb|mb|tb|kb|mm|cm|kg|g\b|ml|l\b|w\b|v\b|hz|fps|polegadas|inch|ano|year)\b/.test(after))return true;
+  if(/\d+\s*x\s*$/.test(before))return true;
+  return false;
+}
+function findPricesInText(content,cur){
+  const range=priceRangeFor(cur);
+  const patterns=[];
+  if(cur==="BRL")patterns.push({rx:/R\$\s*([\d.]+(?:,\d{1,2})?)/g,parse:parseBRL});
+  else if(cur==="USD"){patterns.push({rx:/(?:US\$|USD)\s*([\d,]+(?:\.\d{1,2})?)/g,parse:parseEN});patterns.push({rx:/\$\s*([\d,]+\.\d{1,2})/g,parse:parseEN});}
+  else if(cur==="EUR"){patterns.push({rx:/€\s*([\d.]+(?:,\d{1,2})?)/g,parse:parseBRL});patterns.push({rx:/EUR\s*([\d.]+(?:,\d{1,2})?)/g,parse:parseBRL});}
+  else if(cur==="CNY"){patterns.push({rx:/¥\s*([\d,]+(?:\.\d{1,2})?)/g,parse:parseEN});patterns.push({rx:/CNY\s*([\d,]+(?:\.\d{1,2})?)/g,parse:parseEN});}
+  const out=[],seen=new Set();
+  for(const{rx,parse}of patterns){
+    rx.lastIndex=0;let m;
+    while((m=rx.exec(content))!==null){
+      const raw=m[1];if(!raw)continue;
+      const value=parse(raw);
+      if(!isFinite(value)||value<range[0]||value>range[1])continue;
+      if(looksLikeNonPriceCtx(content,m.index,m[0].length))continue;
+      const key=cur+":"+value+":"+m.index;
+      if(seen.has(key))continue;seen.add(key);
+      out.push({value,currency:cur,text:m[0],position:m.index});
+    }
+  }
+  return out;
+}
+const PROD_URL_RX=[
+  /\/MLB-?\d{6,}/i,/\/p\/MLB\d{6,}/i,/\/dp\/[A-Z0-9]{10}/,/\/gp\/product\/[A-Z0-9]{10}/,
+  /-i\.\d{5,}\.\d{5,}/,/\/p\/[a-z0-9]{6,}[\/.]/ ,/\/item\/\d{6,}/,/\/product-detail\//i,/\/produto\//i,/\/products\/[^/]+/i,
+];
+function findProductUrlsInText(content,siteHost){
+  const siteNoWww=siteHost.replace(/^www\./,"").toLowerCase();
+  const esc=siteNoWww.replace(/\./g,"\\.");
+  const urlRx=new RegExp("https?:\\/\\/(?:[a-z0-9-]+\\.)*"+esc+"\\/[^\\s)\"'<>\\]]+","gi");
+  const all=content.match(urlRx)||[];
+  const out=[];
+  for(const raw of all){
+    const clean=raw.replace(/[).,;:!?\]]+$/,"");
+    if(/\/(search|busca|s\?|find|q=|wholesale|category|categoria)/i.test(clean))continue;
+    if(PROD_URL_RX.some(p=>p.test(clean)))out.push(clean);
+  }
+  return[...new Set(out)];
+}
+function cleanLineForName(raw){
+  return raw.replace(/^[#*\-\s|>]+/,"").replace(/!\[(.*?)\]\(.*?\)/g,"$1").replace(/\[(.*?)\]\(.*?\)/g,"$1").trim();
+}
+function isUsableNameLine(cl){
+  if(cl.length<6||cl.length>240)return false;
+  if(/^https?:\/\//i.test(cl))return false;
+  if(/^(ver|comprar|adicionar|mais|detalhes?|produto|imagem|frete|envio)\b/i.test(cl))return false;
+  if(/^(R\$|US\$|USD|EUR|€|¥|CNY)\s*[\d.,]+/i.test(cl))return false;
+  return true;
+}
+function findNameNearPrice(content,position,query){
+  const qN=normStr(query);
+  const toks=qN.split(" ").filter(t=>t.length>=2);
+  if(!toks.length)return null;
+  const slice=content.slice(Math.max(0,position-600),position);
+  const lines=slice.split("\n").map(l=>l.trim()).filter(Boolean);
+  for(let i=lines.length-1;i>=0;i--){
+    const cl=cleanLineForName(lines[i]||"");
+    if(!isUsableNameLine(cl))continue;
+    const lN=normStr(cl);
+    if(toks.filter(t=>lN.includes(t)).length>=Math.ceil(toks.length/2))return cl.slice(0,200);
+  }
+  return null;
+}
+function detectFreightInText(snippet,cur){
+  if(!snippet)return{freight:0,freightNote:"não encontrado"};
+  if(/(frete\s+gr[áa]tis|free\s+shipping|envio\s+gr[áa]tis)/i.test(snippet))return{freight:0,freightNote:"grátis confirmado"};
+  const sym=cur==="BRL"?"R\\$":cur==="USD"?"(?:US\\$|USD|\\$)":cur==="EUR"?"(?:€|EUR)":"(?:¥|CNY)";
+  const m=snippet.match(new RegExp("(?:frete|shipping|envio)[^\\d]{0,30}"+sym+"\\s*([\\d.,]+)","i"));
+  if(m&&m[1]){
+    const v=cur==="BRL"||cur==="EUR"?parseBRL(m[1]):parseEN(m[1]);
+    if(isFinite(v)&&v>0&&v<5000)return{freight:v,freightNote:"real encontrado"};
+  }
+  return{freight:0,freightNote:"não encontrado"};
+}
+function extractJsonLdCandidates(content,cur){
+  const range=priceRangeFor(cur);
+  const rx=/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  const out=[];let m;
+  while((m=rx.exec(content))!==null){
+    const raw=(m[1]||"").trim();if(!raw)continue;
+    let parsed;try{parsed=JSON.parse(raw)}catch{continue}
+    const flat=n=>{
+      if(Array.isArray(n))return n.flatMap(flat);
+      if(n&&typeof n==="object"){const a=[n];if(n["@graph"])a.push(...flat(n["@graph"]));return a;}
+      return[];
+    };
+    for(const node of flat(parsed)){
+      if(!node||typeof node!=="object")continue;
+      const t=node["@type"];
+      if(t!=="Product"&&!(Array.isArray(t)&&t.includes("Product")))continue;
+      const name=typeof node["name"]==="string"?node["name"].trim():"";
+      if(!name||name.length<3)continue;
+      const offers=node["offers"];
+      const ofList=Array.isArray(offers)?offers:(offers?[offers]:[]);
+      for(const off of ofList){
+        if(!off||typeof off!=="object")continue;
+        const pr=off["price"]??off["lowPrice"];
+        const c=String(off["priceCurrency"]??cur).toUpperCase();
+        if(c!==cur)continue;
+        const price=typeof pr==="number"?pr:parseFloat(String(pr||"").replace(/,/g,"."));
+        if(!isFinite(price)||price<range[0]||price>range[1])continue;
+        const url=String(node["url"]??off["url"]??"").trim();
+        out.push({name:name.slice(0,200),price,currency:c,url,evidenceText:name+" — "+c+" "+price,freight:0,freightNote:"não encontrado",matchScore:80,source:"json-ld"});
+      }
+    }
+  }
+  return out;
+}
+function extractFromContent(content,sup,product,supCur,searchUrl,set,queryMeta){
+  if(!content||content.length<200)return{found:false,error:"conteúdo insuficiente"};
+  const siteHost=String(sup.site||"").trim();
+  const jsonLd=extractJsonLdCandidates(content,supCur);
+  const prices=findPricesInText(content,supCur);
+  const productUrls=findProductUrlsInText(content,siteHost);
+  const mdCandidates=[];
+  for(const p of prices){
+    const name=findNameNearPrice(content,p.position,product);
+    if(!name)continue;
+    const match=scoreMatchDirect(product,name);
+    if(match.score<30)continue;
+    if(match.isLikelyAccessory&&!queryMeta.isSearchingAccessory)continue;
+    let bestUrl="",bestDist=Infinity;
+    for(const u of productUrls){const idx=content.indexOf(u);if(idx<0)continue;const d=Math.abs(idx-p.position);if(d<bestDist){bestDist=d;bestUrl=u;}}
+    const evS=Math.max(0,p.position-100),evE=Math.min(content.length,p.position+100);
+    const evidenceText=content.slice(evS,evE).replace(/\s+/g," ").trim();
+    const snip=content.slice(Math.max(0,p.position-200),Math.min(content.length,p.position+200));
+    const ship=detectFreightInText(snip,supCur);
+    mdCandidates.push({name,price:p.value,currency:p.currency,url:bestUrl,evidenceText,freight:ship.freight,freightNote:ship.freightNote,matchScore:match.score,source:"markdown",distance:bestDist===Infinity?9999:bestDist});
+  }
+  const candidates=[...jsonLd,...mdCandidates];
+  if(!candidates.length)return{found:false,error:"produto não encontrado"};
+  candidates.sort((a,b)=>b.matchScore-a.matchScore||(a.source==="json-ld"?0:1)-(b.source==="json-ld"?0:1)||a.price-b.price);
+  const best=candidates[0];
+  const p={
+    found:true,
+    productName:best.name,
+    price:best.price,
+    currency:best.currency,
+    link:best.url||searchUrl,
+    freight:best.freight||0,
+    freightNote:best.freightNote||"não encontrado",
+    available:true,
+    priceSourceText:best.evidenceText||"",
+    exactMatchScore:best.matchScore||75,
+    priceConfidence:best.source==="json-ld"?90:70,
+    totalConfidence:best.source==="json-ld"?90:70,
+    warnings:[],
+    note:"",
+  };
+  return buildResult(p,product,sup,set,queryMeta,searchUrl);
+}
+
+// ══════════════════════════════════════════════════════
+// BUSCA — Jina Reader + Extração Direta (sem IA)
 // ══════════════════════════════════════════════════════
 
 // Busca conteúdo real de uma URL via Jina Reader (gratuito, sem chave)
@@ -773,7 +961,7 @@ function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
   };
 }
 
-// Busca um fornecedor em 2 fases, ambas usando Jina Reader (sem grounding para evitar invenção)
+// Busca um fornecedor via Jina Reader + extração direta (sem IA)
 async function searchOneSupplier(product,sup,queryMeta){
   const set=ST.settings;
   if(!sup||typeof sup!=="object")return{found:false,error:"fornecedor inválido"};
@@ -792,137 +980,21 @@ async function searchOneSupplier(product,sup,queryMeta){
     return{found:false,error:"não foi possível construir URL de busca"};
   }
 
-  const jsonTpl=`{"found":true,"productName":"nome real","price":0.00,"priceMin":0.00,"priceMax":0.00,"currency":"${supCur}","link":"url","sellerName":"","productRating":"","productReviews":0,"freight":0.00,"freightNote":"não encontrado","available":true,"sellers":1,"priceSourceText":"trecho do preço","exactMatchScore":80,"priceConfidence":80,"totalConfidence":80,"warnings":[],"note":""}`;
-
   const errors=[];
-  const siteNoWww=supSite.replace(/^www\./,"").toLowerCase();
-  // Extrai do conteúdo Jina o PRIMEIRO link de produto direto (não busca/categoria)
-  const findDirectUrl=(content)=>{
-    if(!content)return null;
-    // 1) Padrões de URL de produto por marketplace
-    const patterns=[
-      /https?:\/\/[^\s)"'<>]*mercadolivre\.com\.br\/[^\s)"'<>]*(?:MLB-?\d{6,}|\/p\/MLB\d{6,})[^\s)"'<>]*/i,
-      /https?:\/\/[^\s)"'<>]*amazon\.com(?:\.br)?\/(?:[^\s)"'<>]*\/)?dp\/[A-Z0-9]{10}[^\s)"'<>]*/i,
-      /https?:\/\/[^\s)"'<>]*shopee\.com\.br\/[^\s)"'<>]*-i\.\d{4,}\.\d{4,}[^\s)"'<>]*/i,
-      /https?:\/\/[^\s)"'<>]*magazineluiza\.com\.br\/[^\s)"'<>]*\/p\/[a-z0-9]{6,}[^\s)"'<>]*/i,
-      /https?:\/\/[^\s)"'<>]*aliexpress\.com\/item\/\d{8,}[^\s)"'<>]*/i,
-      /https?:\/\/[^\s)"'<>]*alibaba\.com\/product-detail\/[^\s)"'<>]+/i,
-    ];
-    for(const p of patterns){
-      const m=content.match(p);
-      if(m)return m[0].replace(/[).,;:!?]+$/,"");
-    }
-    return null;
-  };
-  // Para fornecedores personalizados: extrai primeiro link interno do domínio que NÃO seja a página de busca
-  const findCustomUrl=(content,siteHost,searchPath)=>{
-    if(!content||!siteHost)return null;
-    const escSite=siteHost.replace(/\./g,"\\.");
-    const rx=new RegExp(`https?://(?:www\\.)?${escSite}/[^\\s)"'<>]{4,}`,"gi");
-    const matches=content.match(rx)||[];
-    for(const u of matches){
-      const clean=u.replace(/[).,;:!?]+$/,"");
-      // pula URLs que são a própria página de busca
-      if(searchPath&&clean.includes(searchPath))continue;
-      if(/\/(search|busca|s\?|find|q=)/i.test(clean))continue;
-      return clean;
-    }
-    return null;
-  };
 
-  // ── FASE 1: Jina Reader na página de busca do site ──
+  // ── Fetch via Jina Reader (converte HTML em markdown limpo) ──
   let pageContent="";
   try{
     pageContent=await fetchPageViaJina(searchUrl);
   }catch(e){
-    errors.push("Jina(busca): "+e.message);
-    console.warn("[PriceIQ] Jina:searchPage falhou",supName,e.message);
+    errors.push("Jina: "+e.message);
+    console.warn("[PriceIQ] Jina falhou",supName,e.message);
   }
 
-  if(pageContent&&pageContent.length>300){
-    const prompt=`Extrator de e-commerce. Analise a página de busca real do ${supName} (${supSite}) e retorne o melhor produto "${product}".
-
-CONTEÚDO DA PÁGINA:
----
-${pageContent.slice(0,7000)}
----
-
-REGRAS:
-1. NÃO retorne acessórios/capas/cabos/películas a menos que o usuário pediu.
-2. Se múltiplos: escolha menor preço + melhor avaliação.
-3. Extraia SOMENTE dados visíveis no texto. NÃO invente nada.
-4. Para "link" — PROCURE COM ATENÇÃO uma URL de produto específico no conteúdo:
-   • Padrões comuns: /MLB (Mercado Livre), /dp/ (Amazon), -i. (Shopee), /p/ (Magalu/genérico), /item/ (AliExpress), /product-detail/ (Alibaba), /produto/, /products/, /pd/, /pdp/
-   • Aceite QUALQUER URL completa começando com http(s):// que contenha "${siteNoWww}" e que NÃO seja a página de busca/categoria
-   • Em sites personalizados, links de produto geralmente têm um ID/slug único após o domínio (ex: /produto/cooler-asus-rog-12345)
-   • Se realmente não encontrar URL de produto específico, use: "${searchUrl}"
-5. Se não encontrar "${product}" com preço real: {"found":false,"reason":"..."}
-
-RETORNE APENAS este JSON:
-${jsonTpl}`;
-
-    try{
-      const raw=await callGemini(prompt,1000,false);
-      const p=parseJson(raw);
-      // Pós-processamento: se o Gemini não conseguiu pegar link direto, escaneia o conteúdo Jina
-      if(p&&p.found!==false&&!isProductUrl(String(p.link||""))){
-        const direct=findDirectUrl(pageContent)||findCustomUrl(pageContent,siteNoWww,"/search");
-        if(direct&&(direct.includes(siteNoWww)||direct.includes(supSite)))p.link=direct;
-      }
-      const r=buildResult(p,product,sup,set,queryMeta,searchUrl);
-      if(r.found)return r;
-    }catch(e){
-      errors.push("Gemini(busca): "+e.message);
-      console.warn("[PriceIQ] Gemini:parse:searchPage falhou",supName,e.message);
-      if(isQuotaError(e))return{found:false,error:"Quota Gemini esgotada — "+e.message,quotaExceeded:true};
-    }
-  }
-
-  // ── FASE 2: Jina no Google Search (busca produto no site específico) ──
-  // Sem grounding — Google via Jina retorna dados reais indexados, sem invenção
-  const gQuery=encodeURIComponent(product+" site:"+supSite);
-  const googleUrl=`https://www.google.com/search?q=${gQuery}&hl=pt-BR&num=5`;
-  let googleContent="";
-  try{
-    googleContent=await fetchPageViaJina(googleUrl);
-  }catch(e){
-    errors.push("Jina(Google): "+e.message);
-    console.warn("[PriceIQ] Jina:google falhou",supName,e.message);
-  }
-
-  if(googleContent&&googleContent.length>200){
-    const prompt=`Analise os resultados do Google para "${product}" no site ${supSite}.
-
-RESULTADOS DO GOOGLE:
----
-${googleContent.slice(0,6000)}
----
-
-TAREFA:
-1. Encontre "${product}" nos snippets do Google que sejam de ${supSite}.
-2. Extraia o link direto ao produto (deve conter ${supSite} e ter padrão de ID como /MLB, /dp/, /item/).
-   Se não encontrar URL de produto direto, use: "${searchUrl}"
-3. Extraia preço SOMENTE se visível no snippet. Se não aparecer preço: {"found":false,"reason":"preço não visível no Google"}
-4. NÃO invente nenhum dado.
-
-RETORNE APENAS este JSON:
-${jsonTpl}`;
-
-    try{
-      const raw=await callGemini(prompt,1000,false);
-      const p=parseJson(raw);
-      // Pós-processamento: se o Gemini não pegou link direto, escaneia snippets do Google
-      if(p&&p.found!==false&&!isProductUrl(String(p.link||""))){
-        const direct=findDirectUrl(googleContent)||findCustomUrl(googleContent,siteNoWww,"google.com");
-        if(direct&&(direct.includes(siteNoWww)||direct.includes(supSite)))p.link=direct;
-      }
-      const r=buildResult(p,product,sup,set,queryMeta,searchUrl);
-      if(r.found)return r;
-    }catch(e){
-      errors.push("Gemini(Google): "+e.message);
-      console.warn("[PriceIQ] Gemini:parse:google falhou",supName,e.message);
-      if(isQuotaError(e))return{found:false,error:"Quota Gemini esgotada — "+e.message,quotaExceeded:true};
-    }
+  if(pageContent&&pageContent.length>=200){
+    const r=extractFromContent(pageContent,sup,product,supCur,searchUrl,set,queryMeta);
+    if(r&&r.found)return r;
+    if(r&&r.error)errors.push(r.error);
   }
 
   const errSummary=errors.length?errors.slice(0,2).join(" | "):"produto não encontrado";
@@ -1246,7 +1318,6 @@ async function doSearch(){
   const inp=document.getElementById("q-inp");
   const q=inp?inp.value.trim():ST.query.trim();
   if(!q){toast("Digite um produto","err");return}
-  if(!getGeminiApiKey()){toast("Configure a Gemini API Key primeiro.","err");nav("settings");return}
   const active=ST.suppliers.filter(s=>s.on);
   const targets=ST.selIds.length?ST.suppliers.filter(s=>ST.selIds.includes(s.id)&&s.on):active;
   if(!targets.length){toast("Nenhum fornecedor ativo","err");return}
@@ -1261,7 +1332,6 @@ async function doSearch(){
   if(hasIntl)await fetchLiveRates();
 
   // ── Busca em paralelo — todos os fornecedores ao mesmo tempo, resultados aparecem conforme cada um termina ──
-  let quotaHit=false;
   const tasks=targets.map(sup=>{
     return Promise.race([
       searchOneSupplier(q,sup,queryMeta),
@@ -1274,7 +1344,6 @@ async function doSearch(){
         renderResultCards();
       }else if(r&&r.error){
         ST.searchErrors.push({supplier:sup.name,message:r.error});
-        if(r.quotaExceeded)quotaHit=true;
       }
       updateProg();
       return r;
@@ -1282,7 +1351,6 @@ async function doSearch(){
       ST.progDone++;
       console.error("[PriceIQ]",sup.name,e);
       ST.searchErrors.push({supplier:sup.name,message:e.message||String(e)});
-      if(isQuotaError(e))quotaHit=true;
       updateProg();
       return{found:false,error:e.message};
     });
@@ -1298,12 +1366,8 @@ async function doSearch(){
 
   // Mostra erros se não houve nenhum resultado
   if(!ST.results.length&&ST.searchErrors.length){
-    const hasQuota=ST.searchErrors.some(e=>/quota|429|esgotad|exceeded|rate limit/i.test(e.message||""));
-    if(hasQuota)toast("Quota Gemini esgotada — veja a caixa de erro abaixo.","err");
-    else{
-      const errMsg=ST.searchErrors.map(e=>e.supplier+": "+e.message).join(" | ");
-      toast("Nenhum resultado. "+errMsg.slice(0,120),"err");
-    }
+    const errMsg=ST.searchErrors.map(e=>e.supplier+": "+e.message).join(" | ");
+    toast("Nenhum resultado. "+errMsg.slice(0,120),"err");
   }
 
   if(ST.results.length){
@@ -1458,11 +1522,9 @@ function renderResults(){
       <div class="prog-wrap"><div id="prog-fill" class="prog-fill" style="width:0%"></div></div>
     </div>`:"";
 
-  const hasQuotaErr=(ST.searchErrors||[]).some(e=>/quota|429|esgotad|exceeded|rate limit/i.test(e.message||""));
   const errorHTML=(ST.searchErrors&&ST.searchErrors.length)?`
     <div style="margin-top:14px;text-align:left;background:rgba(255,77,109,.08);border:1px solid rgba(255,77,109,.25);border-radius:12px;padding:12px">
-      <p style="color:#FF4D6D;font-weight:800;font-size:13px;margin-bottom:8px">${hasQuotaErr?"⚠️ Quota da Gemini API esgotada":"Erro técnico da busca"}</p>
-      ${hasQuotaErr?`<p style="color:#FFD0DA;font-size:12px;margin-bottom:8px;line-height:1.5">A chave gratuita da Gemini atingiu o limite diário (1.500 buscas/dia no modelo flash-lite, 250 no modelo flash). Aguarde até a meia-noite UTC, troque de modelo nas Configurações, ou crie outra chave em <strong>aistudio.google.com</strong>.</p>`:""}
+      <p style="color:#FF4D6D;font-weight:800;font-size:13px;margin-bottom:8px">Erro técnico da busca</p>
       ${ST.searchErrors.slice(0,5).map(e=>`<p style="color:#FFB8C6;font-size:12px;margin-bottom:5px"><strong>${esc(e.supplier)}:</strong> ${esc(e.message).slice(0,180)}</p>`).join("")}
     </div>`:"";
   const empty=!ST.searching&&!ST.results.length?`
@@ -1472,7 +1534,7 @@ function renderResults(){
       <button class="btn btn-g btn-sm" onclick="nav('home')" style="margin:0 auto">Nova busca</button>
       ${errorHTML}
     </div>`:"";
-  // Mostra erros mesmo com resultados parciais (ex: quota Gemini esgotou no meio)
+  // Mostra erros mesmo com resultados parciais
   const partialErrorHTML=(!ST.searching&&ST.results.length&&ST.searchErrors.length)?errorHTML:"";
 
   document.getElementById("page-results").innerHTML=`

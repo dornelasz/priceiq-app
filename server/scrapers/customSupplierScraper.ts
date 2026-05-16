@@ -9,7 +9,7 @@
 import type { Supplier } from '../services/supplierService.js';
 import {
   buildDefaultSearchUrl,
-  extractViaJinaAndGemini,
+  extractViaJina,
   type ScrapeOptions,
   type ScrapedResult,
 } from './jinaReaderScraper.js';
@@ -20,5 +20,5 @@ export async function scrapeCustomSupplier(
   opts: ScrapeOptions,
 ): Promise<ScrapedResult> {
   const searchUrl = buildDefaultSearchUrl(supplier, query);
-  return extractViaJinaAndGemini(supplier, query, searchUrl, opts);
+  return extractViaJina(supplier, query, searchUrl, opts);
 }
