@@ -163,7 +163,7 @@ const ST={
   query:"",selIds:[],results:[],meta:null,insight:null,
   searching:false,aiLoading:false,
   progDone:0,progTotal:0,progCur:"",
-  expandId:null,manualFormId:null,view:"home",
+  expandId:null,manualFormId:null,assistedTab:"text",view:"home",
   sfMode:null,sfId:null,sfData:null,
   rateLoading:false,
   searchErrors:[]
@@ -212,6 +212,15 @@ function migrateSuppliers(){
     if(!out.url||typeof out.url!=="string"||!out.url.includes("{q}")){
       const siteKey=String(out.site||"").replace(/^www\./,"").toLowerCase();
       out.url=KNOWN_URLS[siteKey]||(out.site?`https://${out.site}/search?q={q}`:"");
+      changed=true;
+    }
+    // ── AI Search Agent: campos novos com defaults sãos ──
+    if(!Array.isArray(out.catalog))out.catalog=[];
+    if(typeof out.supportsPublicSearch!=="boolean")out.supportsPublicSearch=true;
+    if(typeof out.requiresLogin!=="boolean")out.requiresLogin=false;
+    if(!out.collectionMode)out.collectionMode="agent";
+    if(!Array.isArray(out.allowedMethods)||!out.allowedMethods.length){
+      out.allowedMethods=DEFAULT_METHODS.slice();
       changed=true;
     }
     return out;
@@ -587,18 +596,24 @@ function rateAge(){
 // ══════════════════════════════════════════════════════════════════════
 
 const SearchStatus={
-  VERIFIED:          "verified",
-  CHECK_DATA:        "check_data",
-  MANUAL_SEARCH:     "manual_search",
-  PRICE_NOT_FOUND:   "price_not_found",
-  PRODUCT_NOT_FOUND: "product_not_found",
-  BLOCKED:           "blocked",
-  ERROR:             "error",
+  VERIFIED:                "verified",
+  CHECK_DATA:              "check_data",
+  MANUAL_SEARCH:           "manual_search",
+  CATALOG_HIT:             "catalog_hit",
+  MEMORY_HIT:              "memory_hit",
+  NEEDS_ASSISTED_CAPTURE:  "needs_assisted_capture",
+  PRICE_NOT_FOUND:         "price_not_found",
+  PRODUCT_NOT_FOUND:       "product_not_found",
+  BLOCKED:                 "blocked",
+  ERROR:                   "error",
 };
 const STATUS_LABEL={
   verified:"VERIFICADO",
   check_data:"CONFERIR DADOS",
   manual_search:"BUSCA MANUAL",
+  catalog_hit:"CATÁLOGO",
+  memory_hit:"MEMÓRIA",
+  needs_assisted_capture:"CAPTURA ASSISTIDA",
   price_not_found:"PREÇO NÃO ENCONTRADO",
   product_not_found:"PRODUTO NÃO ENCONTRADO",
   blocked:"BLOQUEADO PELO SITE",
@@ -608,13 +623,36 @@ const STATUS_COLOR={
   verified:"#00E5A0",
   check_data:"#FFB800",
   manual_search:"#00D4FF",
+  catalog_hit:"#9D5CFF",
+  memory_hit:"#8896AA",
+  needs_assisted_capture:"#FFB800",
   price_not_found:"#FFB800",
   product_not_found:"#8896AA",
   blocked:"#FF4D6D",
   error:"#FF4D6D",
 };
-// Ordem de exibição: verificados primeiro, depois conferir, depois manuais
-const STATUS_RANK={verified:0,check_data:1,manual_search:2,price_not_found:3,product_not_found:4,blocked:5,error:6};
+// Ordem de exibição: verificados → catálogo → memória → conferir → manuais → assistido → não encontrado → bloqueado/erro
+const STATUS_RANK={verified:0,catalog_hit:1,memory_hit:2,check_data:3,manual_search:4,needs_assisted_capture:5,price_not_found:6,product_not_found:7,blocked:8,error:9};
+
+// Métodos de coleta do AI Search Agent
+const SearchMethod={
+  CATALOG:          "catalog",
+  SAVED_RESULTS:    "saved_results",
+  PUBLIC_CONNECTOR: "public_connector",
+  ASSISTED:         "assisted",
+  TEXT_PASTE:       "text_paste",
+  LINK_PASTE:       "link_paste",
+  MANUAL:           "manual",
+};
+const DEFAULT_METHODS=[
+  SearchMethod.CATALOG,
+  SearchMethod.SAVED_RESULTS,
+  SearchMethod.PUBLIC_CONNECTOR,
+  SearchMethod.ASSISTED,
+  SearchMethod.TEXT_PASTE,
+  SearchMethod.LINK_PASTE,
+  SearchMethod.MANUAL,
+];
 
 // ── 1. textUtils ────────────────────────────────────────────────
 function normText(s){
@@ -656,7 +694,12 @@ function scoreProduct(queryMeta,candidateName){
   if(!queryMeta.isAccessorySearch){
     for(const neg of NEGATIVE_TOKENS){
       const nn=normText(neg);
-      if(nameNorm.includes(nn)){isNegative=true;isLikelyAccessory=true;break;}
+      // Se o usuário buscou esse termo na query, não conta como negativo
+      if(queryMeta.tokens.includes(nn))continue;
+      // Multi-word: usa includes; single-word: exige token inteiro (evita "fone" casando em "fonte")
+      const isMulti=nn.includes(" ");
+      const hit=isMulti?nameNorm.includes(nn):nameTokens.includes(nn);
+      if(hit){isNegative=true;isLikelyAccessory=true;break;}
     }
   }
   const matchedTokens=queryMeta.tokens.filter(t=>nameTokens.includes(t)).length;
@@ -1135,12 +1178,509 @@ function priceIqSelfTest(){
 }
 // Expõe globalmente
 if(typeof window!=="undefined")window.priceIqSelfTest=priceIqSelfTest;
+
+// ══════════════════════════════════════════════════════════════════════
+// ╔════════════════════════════════════════════════════════════════════╗
+// ║                                                                    ║
+// ║                  PRICEIQ AI SEARCH AGENT                           ║
+// ║                                                                    ║
+// ║  Orquestra a busca em fornecedores escolhendo o melhor método      ║
+// ║  para cada caso. Nunca inventa dados: cada resultado tem origem    ║
+// ║  rastreável (catálogo, memória, conector público, texto/link       ║
+// ║  colado pelo usuário ou preenchimento manual).                     ║
+// ║                                                                    ║
+// ║  Submódulos:                                                       ║
+// ║   • searchMemory      → cache TTL de buscas anteriores             ║
+// ║   • catalogSearch     → busca em catálogo local do fornecedor      ║
+// ║   • textInterpreter   → extrai produto/preço de texto colado       ║
+// ║   • linkInterpreter   → tenta ler link colado (Jina+proxy)         ║
+// ║   • agentPlanner      → escolhe método por fornecedor              ║
+// ║   • searchWithAgent   → orquestrador principal                     ║
+// ║                                                                    ║
+// ║  Regras invioláveis:                                               ║
+// ║   • Não inventa preço, produto, fornecedor ou link.                ║
+// ║   • Não burla CAPTCHA, login, Cloudflare ou anti-bot.              ║
+// ║   • Se site bloquear, NÃO insiste — pede captura assistida.        ║
+// ║   • IA não é fonte primária de preço.                              ║
+// ║   • Resultado sem nome+preço+moeda+origem+data é rejeitado.        ║
+// ║                                                                    ║
+// ╚════════════════════════════════════════════════════════════════════╝
+// ══════════════════════════════════════════════════════════════════════
+
+// ── 1. searchMemory — cache TTL de buscas anteriores ──────────
+const SEARCH_MEMORY_TTL_MS=24*60*60*1000; // 24h
+const SEARCH_MEMORY_MAX_ENTRIES=80;
+const searchMemory={
+  _key:"piq_mem",
+  _load(){try{return JSON.parse(localStorage.getItem(this._key))||{}}catch{return{}}},
+  _save(m){try{localStorage.setItem(this._key,JSON.stringify(m))}catch{}},
+  _norm(q){return normText(q).trim();},
+  get(query,supplierId){
+    const m=this._load();
+    const key=this._norm(query)+"::"+supplierId;
+    const entry=m[key];
+    if(!entry)return null;
+    if(Date.now()-entry.ts>SEARCH_MEMORY_TTL_MS)return null;
+    return entry.record;
+  },
+  set(query,supplierId,record){
+    if(!record||!record.price||record.price<=0)return;
+    const m=this._load();
+    const key=this._norm(query)+"::"+supplierId;
+    m[key]={ts:Date.now(),record};
+    // Limita tamanho
+    const keys=Object.keys(m);
+    if(keys.length>SEARCH_MEMORY_MAX_ENTRIES){
+      keys.sort((a,b)=>m[a].ts-m[b].ts);
+      for(let i=0;i<keys.length-SEARCH_MEMORY_MAX_ENTRIES;i++)delete m[keys[i]];
+    }
+    this._save(m);
+  },
+  clear(){this._save({});},
+  size(){return Object.keys(this._load()).length;},
+};
+
+// ── 2. catalogSearch — procura em catálogo local do fornecedor ──
+// Formato de cada linha do catálogo (texto):
+//   Nome do produto | preço | moeda | link?
+//   Ex: Fonte Corsair CV650 650W 80 Plus | 399.90 | BRL | https://...
+function parseCatalogLine(line){
+  if(!line||typeof line!=="string")return null;
+  const clean=line.trim();
+  if(!clean||clean.startsWith("#"))return null;
+  const parts=clean.split("|").map(p=>p.trim());
+  if(parts.length<2)return null;
+  const name=parts[0];
+  if(!name||name.length<2)return null;
+  const priceRaw=(parts[1]||"").replace(/[^\d.,]/g,"");
+  let price=NaN;
+  if(priceRaw.includes(",")&&priceRaw.includes(".")){
+    const lc=priceRaw.lastIndexOf(","),ld=priceRaw.lastIndexOf(".");
+    price=lc>ld?parseFloat(priceRaw.replace(/\./g,"").replace(",",".")):parseFloat(priceRaw.replace(/,/g,""));
+  } else if(priceRaw.includes(",")){
+    price=parseFloat(priceRaw.replace(",","."));
+  } else {
+    price=parseFloat(priceRaw);
+  }
+  if(!Number.isFinite(price)||price<=0)return null;
+  const currency=(parts[2]||"BRL").toUpperCase();
+  if(!["BRL","USD","EUR","CNY"].includes(currency))return null;
+  const link=(parts[3]||"").trim();
+  return{name,price,currency,link:link||""};
+}
+function parseCatalogText(text){
+  if(!text||typeof text!=="string")return[];
+  return text.split(/\r?\n/).map(parseCatalogLine).filter(Boolean);
+}
+function catalogSearch(supplier,queryMeta){
+  const items=Array.isArray(supplier.catalog)?supplier.catalog:[];
+  if(!items.length)return null;
+  let best=null,bestScore=0;
+  for(const item of items){
+    if(!item||!item.name||!item.price)continue;
+    const sc=scoreProduct(queryMeta,item.name);
+    if(sc.isNegative)continue;
+    if(sc.score>bestScore){bestScore=sc.score;best={item,score:sc};}
+  }
+  if(!best||bestScore<55)return null;
+  return{
+    productName:best.item.name,
+    price:best.item.price,
+    currency:best.item.currency||supplier.cur||"BRL",
+    link:best.item.link||"",
+    availability:"em catálogo",
+    matchScore:bestScore,
+    evidence:"Linha do catálogo: "+best.item.name+" "+best.item.currency+" "+best.item.price,
+  };
+}
+
+// ── 3. textInterpreter — extrai produto/preço de texto colado ──
+// Estratégia 100% local (sem IA): regex de moeda + nome ao redor.
+function interpretPastedText(text,queryMeta){
+  if(!text||typeof text!=="string"||text.trim().length<3){
+    return{ok:false,reason:"Texto muito curto"};
+  }
+  const t=text.replace(/\s+/g," ").trim();
+  // Tenta cada moeda; pega o maior preço plausível com bom match no texto
+  const currencies=["BRL","USD","EUR","CNY"];
+  let best=null;
+  for(const cur of currencies){
+    const prices=findPrices(t,cur);
+    for(const p of prices){
+      if(!isPlausiblePrice(p.value,cur))continue;
+      // Recorta janela ao redor do preço, procura nome
+      const start=Math.max(0,p.position-300);
+      const end=Math.min(t.length,p.position+300);
+      const window=t.slice(start,end);
+      const candidateName=findNameNear(t,p.position,queryMeta)||t.slice(0,Math.min(140,t.length)).trim();
+      if(!candidateName)continue;
+      const sc=scoreProduct(queryMeta,candidateName);
+      if(sc.isNegative)continue;
+      const conf=Math.min(95,Math.round(sc.score*0.9+(p.value>0?10:0)));
+      if(!best||conf>best.confidence){
+        best={
+          ok:true,
+          productName:candidateName,
+          price:p.value,
+          currency:cur,
+          availability:/em estoque|dispon[ií]vel|in stock/i.test(window)?"em estoque":(/esgot|sem estoque|out of stock/i.test(window)?"esgotado":""),
+          matchScore:sc.score,
+          confidence:conf,
+          evidence:window.slice(0,240),
+        };
+      }
+    }
+  }
+  if(!best)return{ok:false,reason:"Nenhum preço encontrado no texto"};
+  return best;
+}
+
+// ── 4. linkInterpreter — tenta ler URL colada via Jina+proxy ──
+async function interpretPastedLink(url,queryMeta,supplier){
+  if(!url||!/^https?:\/\//i.test(url)){
+    return{ok:false,reason:"URL inválida"};
+  }
+  // Reutiliza o motor existente: Jina → CORS proxy → parser
+  let content=null;
+  try{content=await fetchViaJina(url);}catch(e){
+    if(e&&!e.siteBlocked){try{content=await fetchViaCorsProxy(url);}catch{}}
+  }
+  if(!content||content.length<200){
+    return{ok:false,reason:"Link não pôde ser lido — preencha manualmente"};
+  }
+  const parsed=parseContent(content,supplier,queryMeta);
+  if(!parsed||!parsed.candidate||!parsed.candidate.price){
+    return{ok:false,reason:"Não foi possível extrair preço da página"};
+  }
+  const c=parsed.candidate;
+  return{
+    ok:true,
+    productName:c.name,
+    price:c.price,
+    currency:c.currency,
+    link:url,
+    availability:"em estoque",
+    matchScore:c.match?.score||0,
+    confidence:Math.min(85,Math.round((c.match?.score||60)*0.95)),
+    evidence:c.evidence||"",
+  };
+}
+
+// ── 5. agentPlanner — escolhe métodos por fornecedor ──────────
+function agentPlanner(supplier,query,queryMeta){
+  const allowed=Array.isArray(supplier.allowedMethods)&&supplier.allowedMethods.length
+    ?supplier.allowedMethods:DEFAULT_METHODS;
+  const plan=[];
+  // 1. Catálogo local primeiro (offline, instantâneo)
+  if(allowed.includes(SearchMethod.CATALOG)&&Array.isArray(supplier.catalog)&&supplier.catalog.length){
+    plan.push({method:SearchMethod.CATALOG,reason:"Catálogo local disponível"});
+  }
+  // 2. Memória de busca (cache TTL)
+  if(allowed.includes(SearchMethod.SAVED_RESULTS)){
+    const cached=searchMemory.get(query,supplier.id);
+    if(cached)plan.push({method:SearchMethod.SAVED_RESULTS,reason:"Resultado em memória",_cached:cached});
+  }
+  // 3. Conector público (Jina+proxy)
+  if(allowed.includes(SearchMethod.PUBLIC_CONNECTOR)&&supplier.supportsPublicSearch!==false&&!supplier.requiresLogin){
+    plan.push({method:SearchMethod.PUBLIC_CONNECTOR,reason:"Site permite leitura pública"});
+  }
+  // 4. Sempre disponível como fallback final: assistência humana
+  plan.push({method:SearchMethod.ASSISTED,reason:"Captura assistida (fallback)"});
+  return{supplierId:supplier.id,supplierName:supplier.name,plan,allowed};
+}
+
+// ── 6. Builders dos resultados especiais (catalog/memory/assisted) ──
+function buildCatalogResultRecord(query,supplier,set,catalogHit,ts){
+  const cur=catalogHit.currency||"BRL";
+  let rateUsed=1;
+  if(cur==="USD")rateUsed=set.usd||5.10;
+  else if(cur==="EUR")rateUsed=set.eur||5.55;
+  else if(cur==="CNY")rateUsed=set.cny||0.70;
+  const priceBRL=parseFloat((catalogHit.price*rateUsed).toFixed(2));
+  const brl=priceBRL; // catálogo não tem frete por padrão
+  const isLink=catalogHit.link&&/^https?:\/\//i.test(catalogHit.link);
+  return{
+    id:"c"+Date.now()+Math.random().toString(36).slice(2,6),
+    status:SearchStatus.CATALOG_HIT,
+    statusLabel:STATUS_LABEL.catalog_hit,
+    statusColor:STATUS_COLOR.catalog_hit,
+    statusRank:STATUS_RANK.catalog_hit,
+    reason:"Encontrado no catálogo local do fornecedor",
+    query,supplier:supplier.name,supId:supplier.id,
+    productName:catalogHit.productName,
+    price:catalogHit.price,currency:cur,originalCurrency:cur,
+    priceBRL,freight:0,freightNote:"não informado",freightBRL:0,brl,
+    exchangePair:cur==="BRL"?"BRL":cur+"/BRL",
+    exchangeRateUsed:rateUsed,
+    rateSource:set.rateSource||"Investing.com",rateTime:set.rateTime||"",rateTimestamp:set.rateTimestamp||0,
+    link:isLink?catalogHit.link:"",
+    linkType:isLink?"product":"catalog",
+    linkValidated:false,
+    manualSearchUrl:buildSearchUrl(supplier,query),
+    evidence:catalogHit.evidence||"",
+    matchScore:catalogHit.matchScore||0,
+    confidence:Math.min(95,catalogHit.matchScore||80),
+    totalConfidence:Math.min(95,catalogHit.matchScore||80),
+    available:true,freeShip:false,
+    sellerName:"",productRating:"",productReviews:0,sellers:1,
+    priceMin:catalogHit.price,priceMax:catalogHit.price,
+    priceMinBrl:priceBRL,priceMaxBrl:priceBRL,
+    needsManualFreightCheck:true,
+    priceSourceText:catalogHit.evidence||"",
+    warnings:["Frete não considerado — confirmar com fornecedor"],
+    note:"Resultado de catálogo local — verificar disponibilidade",
+    ts,sourceType:SearchMethod.CATALOG,
+  };
+}
+function buildMemoryResultRecord(cachedRecord,ts){
+  // Reusa o registro salvo mas remarca como memory_hit para deixar claro
+  return{
+    ...cachedRecord,
+    id:"mem"+Date.now()+Math.random().toString(36).slice(2,6),
+    status:SearchStatus.MEMORY_HIT,
+    statusLabel:STATUS_LABEL.memory_hit,
+    statusColor:STATUS_COLOR.memory_hit,
+    statusRank:STATUS_RANK.memory_hit,
+    reason:"Resultado reutilizado da memória — verifique se ainda está atual",
+    note:"Memória de busca anterior em "+fmtDate(cachedRecord.ts||ts),
+    ts,
+    sourceType:SearchMethod.SAVED_RESULTS,
+  };
+}
+function buildAssistedNeededRecord(query,supplier,set,reason,ts){
+  return{
+    id:"a"+Date.now()+Math.random().toString(36).slice(2,6),
+    status:SearchStatus.NEEDS_ASSISTED_CAPTURE,
+    statusLabel:STATUS_LABEL.needs_assisted_capture,
+    statusColor:STATUS_COLOR.needs_assisted_capture,
+    statusRank:STATUS_RANK.needs_assisted_capture,
+    reason:reason||"Este fornecedor precisa de captura assistida.",
+    query,supplier:supplier.name,supId:supplier.id,
+    productName:null,price:null,currency:supplier.cur||"BRL",originalCurrency:supplier.cur||"BRL",
+    priceBRL:0,freight:0,freightNote:"não informado",freightBRL:0,brl:0,
+    exchangePair:(supplier.cur||"BRL")==="BRL"?"BRL":(supplier.cur||"BRL")+"/BRL",
+    exchangeRateUsed:1,
+    rateSource:set.rateSource||"Investing.com",rateTime:set.rateTime||"",rateTimestamp:set.rateTimestamp||0,
+    link:"",linkType:"search",linkValidated:false,
+    manualSearchUrl:buildSearchUrl(supplier,query),
+    evidence:"",matchScore:0,confidence:0,totalConfidence:0,
+    available:true,freeShip:false,
+    sellerName:"",productRating:"",productReviews:0,sellers:1,
+    priceMin:0,priceMax:0,priceMinBrl:0,priceMaxBrl:0,
+    needsManualFreightCheck:true,
+    priceSourceText:"",warnings:[reason||""],
+    note:reason||"Captura assistida necessária",
+    ts,sourceType:SearchMethod.ASSISTED,
+  };
+}
+
+// ── 7. searchWithAgent — orquestrador principal ───────────────
+async function searchWithAgent(query,supplier,queryMeta,set){
+  const ts=new Date().toISOString();
+  const plan=agentPlanner(supplier,query,queryMeta);
+  let lastReason="Nenhum método retornou resultado válido";
+  for(const step of plan.plan){
+    try{
+      if(step.method===SearchMethod.CATALOG){
+        const hit=catalogSearch(supplier,queryMeta);
+        if(hit)return buildCatalogResultRecord(query,supplier,set,hit,ts);
+        lastReason="Nenhum produto compatível no catálogo local";
+      } else if(step.method===SearchMethod.SAVED_RESULTS){
+        if(step._cached)return buildMemoryResultRecord(step._cached,ts);
+      } else if(step.method===SearchMethod.PUBLIC_CONNECTOR){
+        const r=await searchSupplier(query,supplier,queryMeta,set);
+        if(r){
+          if(r.status===SearchStatus.VERIFIED||r.status===SearchStatus.CHECK_DATA){
+            searchMemory.set(query,supplier.id,r);
+            return r;
+          }
+          if(r.status===SearchStatus.BLOCKED){
+            return buildAssistedNeededRecord(query,supplier,set,"Site bloqueou leitura automática — use captura assistida.",ts);
+          }
+          lastReason=r.reason||"Conector público sem resultado válido";
+        }
+      } else if(step.method===SearchMethod.ASSISTED){
+        return buildAssistedNeededRecord(query,supplier,set,lastReason,ts);
+      }
+    } catch(e){
+      lastReason=e.message||String(e);
+    }
+  }
+  return buildAssistedNeededRecord(query,supplier,set,lastReason,ts);
+}
+
+// ── 8. UI handlers — captura assistida (texto / link / catálogo) ──
+async function submitPastedText(btn){
+  const rid=btn.getAttribute("data-rid");
+  const orig=ST.results.find(r=>r.id===rid);
+  if(!orig)return;
+  const form=btn.closest(".assisted-form");
+  const text=(form.querySelector("[name=ptext]").value||"").trim();
+  if(!text){toast("Cole o texto do produto","err");return;}
+  const supplier=ST.suppliers.find(s=>s.id===orig.supId);
+  if(!supplier){toast("Fornecedor não encontrado","err");return;}
+  const queryMeta=analyzeQuery(orig.query);
+  const out=interpretPastedText(text,queryMeta);
+  if(!out.ok){toast(out.reason||"Texto não interpretado","err");return;}
+  const ts=new Date().toISOString();
+  const cur=out.currency||"BRL";
+  let rateUsed=1;
+  if(cur==="USD")rateUsed=ST.settings.usd||5.10;
+  else if(cur==="EUR")rateUsed=ST.settings.eur||5.55;
+  else if(cur==="CNY")rateUsed=ST.settings.cny||0.70;
+  const priceBRL=parseFloat((out.price*rateUsed).toFixed(2));
+  const rec={
+    id:"tp"+Date.now(),
+    status:SearchStatus.CHECK_DATA,
+    statusLabel:STATUS_LABEL.check_data,
+    statusColor:STATUS_COLOR.check_data,
+    statusRank:STATUS_RANK.check_data,
+    reason:"Interpretado de texto colado — confira o produto",
+    query:orig.query,supplier:supplier.name,supId:supplier.id,
+    productName:out.productName,price:out.price,currency:cur,originalCurrency:cur,
+    priceBRL,freight:0,freightNote:"não informado",freightBRL:0,brl:priceBRL,
+    exchangePair:cur==="BRL"?"BRL":cur+"/BRL",
+    exchangeRateUsed:rateUsed,
+    rateSource:ST.settings.rateSource||"Investing.com",
+    rateTime:ST.settings.rateTime||"",
+    rateTimestamp:ST.settings.rateTimestamp||0,
+    link:"",linkType:"text",linkValidated:false,
+    manualSearchUrl:orig.manualSearchUrl||buildSearchUrl(supplier,orig.query),
+    evidence:out.evidence||text.slice(0,240),
+    matchScore:out.matchScore||0,confidence:out.confidence||60,totalConfidence:out.confidence||60,
+    available:true,freeShip:false,
+    sellerName:"",productRating:"",productReviews:0,sellers:1,
+    priceMin:out.price,priceMax:out.price,priceMinBrl:priceBRL,priceMaxBrl:priceBRL,
+    needsManualFreightCheck:true,
+    priceSourceText:out.evidence||"",
+    warnings:["Frete não considerado — verifique no fornecedor"],
+    note:"Texto colado pelo usuário",
+    ts,sourceType:SearchMethod.TEXT_PASTE,verifiedByUser:true,
+  };
+  ST.results=ST.results.filter(r=>r.id!==rid);
+  ST.results.push(rec);
+  ST.results.sort(compareResults);
+  ST.manualFormId=null;
+  renderResultCards();
+  toast("Texto interpretado e adicionado");
+}
+async function submitPastedLink(btn){
+  const rid=btn.getAttribute("data-rid");
+  const orig=ST.results.find(r=>r.id===rid);
+  if(!orig)return;
+  const form=btn.closest(".assisted-form");
+  const url=(form.querySelector("[name=plink]").value||"").trim();
+  if(!url){toast("Cole o link do produto","err");return;}
+  const supplier=ST.suppliers.find(s=>s.id===orig.supId);
+  if(!supplier){toast("Fornecedor não encontrado","err");return;}
+  btn.disabled=true;btn.textContent="Lendo...";
+  const queryMeta=analyzeQuery(orig.query);
+  const out=await interpretPastedLink(url,queryMeta,supplier);
+  btn.disabled=false;
+  if(!out.ok){
+    toast(out.reason||"Link não pôde ser lido — preencha manualmente","err");
+    return;
+  }
+  const ts=new Date().toISOString();
+  const cur=out.currency||"BRL";
+  let rateUsed=1;
+  if(cur==="USD")rateUsed=ST.settings.usd||5.10;
+  else if(cur==="EUR")rateUsed=ST.settings.eur||5.55;
+  else if(cur==="CNY")rateUsed=ST.settings.cny||0.70;
+  const priceBRL=parseFloat((out.price*rateUsed).toFixed(2));
+  const rec={
+    id:"lp"+Date.now(),
+    status:SearchStatus.CHECK_DATA,
+    statusLabel:STATUS_LABEL.check_data,
+    statusColor:STATUS_COLOR.check_data,
+    statusRank:STATUS_RANK.check_data,
+    reason:"Interpretado do link colado — confira o produto",
+    query:orig.query,supplier:supplier.name,supId:supplier.id,
+    productName:out.productName,price:out.price,currency:cur,originalCurrency:cur,
+    priceBRL,freight:0,freightNote:"não informado",freightBRL:0,brl:priceBRL,
+    exchangePair:cur==="BRL"?"BRL":cur+"/BRL",
+    exchangeRateUsed:rateUsed,
+    rateSource:ST.settings.rateSource||"Investing.com",
+    rateTime:ST.settings.rateTime||"",
+    rateTimestamp:ST.settings.rateTimestamp||0,
+    link:out.link||url,linkType:"product",linkValidated:true,
+    manualSearchUrl:orig.manualSearchUrl||buildSearchUrl(supplier,orig.query),
+    evidence:out.evidence||"",
+    matchScore:out.matchScore||0,confidence:out.confidence||70,totalConfidence:out.confidence||70,
+    available:true,freeShip:false,
+    sellerName:"",productRating:"",productReviews:0,sellers:1,
+    priceMin:out.price,priceMax:out.price,priceMinBrl:priceBRL,priceMaxBrl:priceBRL,
+    needsManualFreightCheck:true,
+    priceSourceText:out.evidence||"",
+    warnings:["Frete não considerado — verifique no fornecedor"],
+    note:"Link colado pelo usuário",
+    ts,sourceType:SearchMethod.LINK_PASTE,verifiedByUser:true,
+  };
+  ST.results=ST.results.filter(r=>r.id!==rid);
+  ST.results.push(rec);
+  ST.results.sort(compareResults);
+  ST.manualFormId=null;
+  renderResultCards();
+  toast("Link interpretado e adicionado");
+}
+
+// ── 9. SelfTest do agente — runAgentSelfTest() ─────────────────
+function runAgentSelfTest(){
+  const out=[];let pass=0,fail=0;
+  const t=(name,ok,detail)=>{out.push((ok?"✅":"❌")+" "+name+(detail?" — "+detail:""));ok?pass++:fail++;};
+  // parseCatalogLine
+  const c1=parseCatalogLine("Fonte Corsair CV650 650W 80 Plus Bronze | 399.90 | BRL");
+  t("parseCatalogLine BRL",c1&&c1.price===399.90&&c1.currency==="BRL");
+  const c2=parseCatalogLine("PSU Corsair 650W | 89.99 | USD | https://x.com/p/1");
+  t("parseCatalogLine USD+link",c2&&c2.currency==="USD"&&c2.link==="https://x.com/p/1");
+  t("parseCatalogLine vazio",parseCatalogLine("")===null);
+  t("parseCatalogLine comentário",parseCatalogLine("# nota")===null);
+  // parseCatalogText
+  const t1=parseCatalogText("Item Alpha | 1 | BRL\n# nota\nItem Beta | 2 | USD");
+  t("parseCatalogText 2 itens",t1.length===2,"got "+t1.length);
+  // catalogSearch
+  const qm=analyzeQuery("fonte corsair 650w");
+  const supC={id:"sx",name:"X",cur:"BRL",catalog:[{name:"Fonte Corsair CV650 650W 80 Plus",price:399.90,currency:"BRL"},{name:"Cabo USB",price:10,currency:"BRL"}]};
+  const hit=catalogSearch(supC,qm);
+  t("catalogSearch encontra produto certo",hit&&/corsair/i.test(hit.productName));
+  // interpretPastedText
+  const it=interpretPastedText("Fonte Corsair CV650 650W 80 Plus Bronze R$ 399,90 Em estoque",qm);
+  t("interpretPastedText preço BR",it.ok&&it.price===399.9&&it.currency==="BRL");
+  const it2=interpretPastedText("PSU Corsair 650W $ 89.99 in stock",analyzeQuery("psu corsair 650w"));
+  t("interpretPastedText preço USD",it2.ok&&it2.price===89.99&&it2.currency==="USD");
+  const it3=interpretPastedText("apenas texto sem preço",qm);
+  t("interpretPastedText sem preço falha",!it3.ok);
+  // agentPlanner
+  const supA={id:"sa",name:"A",cur:"BRL",supportsPublicSearch:true,requiresLogin:false,allowedMethods:DEFAULT_METHODS,catalog:[{name:"Fonte Corsair",price:300,currency:"BRL"}]};
+  const planA=agentPlanner(supA,"fonte corsair 650w",qm);
+  t("planner inclui catálogo",planA.plan.some(p=>p.method===SearchMethod.CATALOG));
+  t("planner inclui conector",planA.plan.some(p=>p.method===SearchMethod.PUBLIC_CONNECTOR));
+  t("planner termina em assistido",planA.plan[planA.plan.length-1].method===SearchMethod.ASSISTED);
+  const supB={id:"sb",name:"B",cur:"BRL",supportsPublicSearch:false,requiresLogin:false,allowedMethods:DEFAULT_METHODS,catalog:[]};
+  const planB=agentPlanner(supB,"x",qm);
+  t("planner sem conector quando supportsPublicSearch=false",!planB.plan.some(p=>p.method===SearchMethod.PUBLIC_CONNECTOR));
+  // searchMemory
+  searchMemory.clear();
+  const fake={status:SearchStatus.VERIFIED,price:100,currency:"BRL",supplier:"X"};
+  searchMemory.set("teste","sx",fake);
+  t("searchMemory salva e lê",searchMemory.get("teste","sx")?.price===100);
+  t("searchMemory miss em query nova",searchMemory.get("outra","sx")===null);
+  console.log("%c[AgentSelfTest]","color:#9D5CFF;font-weight:bold","resultado:");
+  out.forEach(l=>console.log(l));
+  console.log(`%c${pass} passou, ${fail} falhou`,`color:${fail?"#FF4D6D":"#00E5A0"};font-weight:bold`);
+  return{pass,fail,out};
+}
+if(typeof window!=="undefined"){
+  window.runAgentSelfTest=runAgentSelfTest;
+  window.searchMemory=searchMemory;
+}
+
 // ══════════════════════════════════════════════════════
 // ANÁLISE FINAL DE RESULTADOS
 // ══════════════════════════════════════════════════════
 async function aiAnalyze(product,results){
   const set=ST.settings;
-  const valid=results.filter(r=>r&&r.brl>0&&(r.status===SearchStatus.VERIFIED||r.status===SearchStatus.CHECK_DATA)).sort((a,b)=>a.brl-b.brl);
+  const valid=results.filter(r=>r&&r.brl>0&&(r.status===SearchStatus.VERIFIED||r.status===SearchStatus.CHECK_DATA||r.status===SearchStatus.CATALOG_HIT||r.status===SearchStatus.MEMORY_HIT||r.status===SearchStatus.MANUAL_SEARCH)).sort((a,b)=>a.brl-b.brl);
   const bestPrice=valid[0];
   const bestRecommended=[...valid].sort((a,b)=>{
     const ac=(a.totalConfidence||75)+(a.sellerName?8:0)+(a.productRating?6:0)-(a.needsManualFreightCheck?5:0);
@@ -1190,10 +1730,10 @@ async function doSearch(){
   const hasIntl=targets.some(s=>s.cur!=="BRL");
   if(hasIntl)await fetchLiveRates();
 
-  // ── Busca em paralelo — cada fornecedor retorna SEMPRE um resultado com SearchStatus ──
+  // ── AI Search Agent: para cada fornecedor, escolhe método e executa ──
   const tasks=targets.map(sup=>{
     return Promise.race([
-      searchSupplier(q,sup,queryMeta,ST.settings),
+      searchWithAgent(q,sup,queryMeta,ST.settings),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error("Timeout no fornecedor "+sup.name)),40000))
     ]).then(r=>{
       ST.progDone++;ST.progCur=sup.name;
@@ -1207,12 +1747,12 @@ async function doSearch(){
     }).catch(e=>{
       ST.progDone++;
       console.error("[PriceIQ]",sup.name,e);
-      // Cria um registro de erro padronizado para esse fornecedor
       const ts=new Date().toISOString();
-      const errResult=buildResultRecord(
-        {status:SearchStatus.ERROR,reason:e.message||String(e)},
-        q,sup,ST.settings,ts,buildSearchUrl(sup,q)
-      );
+      const errResult=buildAssistedNeededRecord(q,sup,ST.settings,e.message||String(e),ts);
+      errResult.status=SearchStatus.ERROR;
+      errResult.statusLabel=STATUS_LABEL.error;
+      errResult.statusColor=STATUS_COLOR.error;
+      errResult.statusRank=STATUS_RANK.error;
       ST.results.push(errResult);
       ST.results.sort(compareResults);
       renderResultCards();
@@ -1223,26 +1763,28 @@ async function doSearch(){
   await Promise.allSettled(tasks);
 
   ST.searching=false;
-  const verified=ST.results.filter(r=>r.status===SearchStatus.VERIFIED||r.status===SearchStatus.CHECK_DATA);
-  const bestBRL=verified.length?verified[0].brl:0;
-  const bestSup=verified.length?verified[0].supplier:"";
+  // Resultados que entram na comparação: verified, check_data, catalog_hit, memory_hit, manual_search
+  const VALID=[SearchStatus.VERIFIED,SearchStatus.CHECK_DATA,SearchStatus.CATALOG_HIT,SearchStatus.MEMORY_HIT,SearchStatus.MANUAL_SEARCH];
+  const valid=ST.results.filter(r=>VALID.includes(r.status)&&r.brl>0);
+  const bestBRL=valid.length?valid[0].brl:0;
+  const bestSup=valid.length?valid[0].supplier:"";
   const m={id:"s"+Date.now(),query:q,ts:new Date().toISOString(),
-    count:verified.length,total:ST.results.length,bestBRL,bestSup};
+    count:valid.length,total:ST.results.length,bestBRL,bestSup};
   ST.meta=m;
   ST.history=[m,...ST.history.slice(0,49)];
   persist();renderResults();
 
-  if(!verified.length){
+  if(!valid.length){
+    const assistedNeeded=ST.results.filter(r=>r.status===SearchStatus.NEEDS_ASSISTED_CAPTURE).length;
     const blocked=ST.results.filter(r=>r.status===SearchStatus.BLOCKED).length;
-    const notFound=ST.results.filter(r=>r.status===SearchStatus.PRODUCT_NOT_FOUND||r.status===SearchStatus.PRICE_NOT_FOUND).length;
-    if(blocked>0&&blocked===ST.results.length) toast("Todos os fornecedores bloquearam a leitura — use o link de busca em cada card","err");
-    else if(notFound>0) toast("Produto não encontrado — confira os links de busca","err");
-    else toast("Nenhum resultado verificado — confira manualmente nos sites","err");
+    if(assistedNeeded>0) toast("Captura assistida necessária — use os botões em cada card","err");
+    else if(blocked>0) toast("Sites bloquearam leitura — cole texto/link ou preencha manualmente","err");
+    else toast("Nenhum resultado válido — confira manualmente nos sites","err");
   }
 
-  if(verified.length){
+  if(valid.length){
     ST.aiLoading=true;renderAiBox();
-    try{ST.insight=await aiAnalyze(q,verified)}catch{ST.insight=null}
+    try{ST.insight=await aiAnalyze(q,valid)}catch{ST.insight=null}
     ST.aiLoading=false;renderAiBox();
   }
 }
@@ -1433,17 +1975,19 @@ function renderResultCards(){
 function buildCards(){
   const results=ST.results;
   const ins=ST.insight;
-  const verifiedResults=results.filter(r=>r.brl>0&&(r.status===SearchStatus.VERIFIED||r.status===SearchStatus.CHECK_DATA));
+  const PRICED_STATUS=[SearchStatus.VERIFIED,SearchStatus.CHECK_DATA,SearchStatus.CATALOG_HIT,SearchStatus.MEMORY_HIT,SearchStatus.MANUAL_SEARCH];
+  const ASSIST_STATUS=[SearchStatus.NEEDS_ASSISTED_CAPTURE,SearchStatus.BLOCKED,SearchStatus.ERROR];
+  const verifiedResults=results.filter(r=>r.brl>0&&PRICED_STATUS.includes(r.status));
   const bestBRL=verifiedResults[0]?.brl||0;
   return results.map((r,i)=>{
-    const hasPrice=Number.isFinite(r.brl)&&r.brl>0&&(r.status===SearchStatus.VERIFIED||r.status===SearchStatus.CHECK_DATA);
+    const hasPrice=Number.isFinite(r.brl)&&r.brl>0&&PRICED_STATUS.includes(r.status);
     const isBestPrice=hasPrice&&verifiedResults.indexOf(r)===0;
     const isBestRec=ins&&ins.bestChoice===r.supplier;
     const isHighConf=r.status===SearchStatus.VERIFIED;
     const diff=hasPrice&&bestBRL&&!isBestPrice?((r.brl-bestBRL)/bestBRL*100).toFixed(1):null;
     const isExp=ST.expandId===r.id;
-    const isBlockedOrError=r.status===SearchStatus.BLOCKED||r.status===SearchStatus.ERROR;
-    const showManualForm=isBlockedOrError&&ST.manualFormId===r.id;
+    const needsAssist=ASSIST_STATUS.includes(r.status);
+    const showManualForm=needsAssist&&ST.manualFormId===r.id;
     const resell=hasPrice?fmt((r.brl||0)*(1+ST.settings.margin/100)):null;
 
     // Status badge (always present)
@@ -1556,54 +2100,76 @@ function buildCards(){
             ${linkBtnIcon}
             ${linkBtnLabel}
           </a>
-          ${isBlockedOrError?`<button class="arow-btn" data-rid="${esc(r.id)}" onclick="toggleManualForm(this)" title="Inserir resultado manualmente" style="color:#00D4FF;border-color:#00D4FF44">${ico.edit} Inserir manual</button>`:""}
+          ${needsAssist?`<button class="arow-btn" data-rid="${esc(r.id)}" data-tab="text" onclick="setAssistedTab(this)" title="Colar texto do produto" style="color:#00D4FF;border-color:#00D4FF44">${ico.edit} Colar texto</button>`:""}
+          ${needsAssist?`<button class="arow-btn" data-rid="${esc(r.id)}" data-tab="link" onclick="setAssistedTab(this)" title="Colar link do produto" style="color:#00D4FF;border-color:#00D4FF44">${ico.link} Colar link</button>`:""}
+          ${needsAssist?`<button class="arow-btn" data-rid="${esc(r.id)}" data-tab="manual" onclick="setAssistedTab(this)" title="Preencher manualmente" style="color:#00D4FF;border-color:#00D4FF44">${ico.edit} Manual</button>`:""}
           <button class="arow-btn icon-only" data-rid="${esc(r.id)}" onclick="toggleExpand(this)" title="Detalhes">${ico.eye}</button>
           <button class="arow-btn icon-only danger" data-rid="${esc(r.id)}" onclick="delResult(this)" title="Remover">${ico.trash}</button>
         </div>
         ${linkWarn}
-        ${showManualForm?`<div class="manual-entry-form" style="margin-top:10px;padding:14px;background:#0D1320;border-radius:10px;border:1px solid #1C2A3A">
-          <p style="color:#00D4FF;font-size:12px;font-weight:700;margin-bottom:10px">${ico.edit} Inserir resultado manual — ${esc(r.supplier)}</p>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
-            <div style="grid-column:1/-1">
-              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">NOME DO PRODUTO *</label>
-              <input name="mname" type="text" placeholder="ex: iPhone 14 128GB" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+        ${showManualForm?(()=>{
+          const tab=ST.assistedTab||"text";
+          const tabBtn=(t,label)=>`<button class="arow-btn${tab===t?" primary":""}" data-rid="${esc(r.id)}" data-tab="${t}" onclick="setAssistedTab(this)" style="flex:1;font-size:11px">${label}</button>`;
+          const textForm=`<div style="margin-top:10px">
+            <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:4px">COLE AQUI O TEXTO COPIADO DA PÁGINA DO PRODUTO</label>
+            <textarea name="ptext" rows="4" placeholder="Cole o trecho que tem o nome e o preço — ex: 'Fonte Corsair CV650 650W 80 Plus Bronze R$ 399,90 Em estoque'" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none;resize:vertical;font-family:inherit"></textarea>
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="arow-btn primary" data-rid="${esc(r.id)}" onclick="submitPastedText(this)" style="flex:1">${ico.check} Interpretar texto</button>
+              <button class="arow-btn" data-rid="${esc(r.id)}" onclick="toggleManualForm(this)">Cancelar</button>
             </div>
-            <div>
-              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">PREÇO *</label>
-              <input name="mprice" type="text" inputmode="decimal" placeholder="ex: 3999.90" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+            <p style="color:#4A5568;font-size:10px;margin-top:6px">${ico.info} O agente extrai o preço sem inventar. Se não houver preço claro, será rejeitado.</p>
+          </div>`;
+          const linkForm=`<div style="margin-top:10px">
+            <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:4px">COLE A URL DO PRODUTO (PÁGINA INDIVIDUAL, NÃO DE BUSCA)</label>
+            <input name="plink" type="url" placeholder="https://${esc(r.supplier?.toLowerCase()?.replace(/\\s/g,"")||"fornecedor")}.com.br/produto/..." style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+            <div style="display:flex;gap:8px;margin-top:8px">
+              <button class="arow-btn primary" data-rid="${esc(r.id)}" onclick="submitPastedLink(this)" style="flex:1">${ico.link} Ler link</button>
+              <button class="arow-btn" data-rid="${esc(r.id)}" onclick="toggleManualForm(this)">Cancelar</button>
             </div>
-            <div>
-              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">MOEDA</label>
-              <select name="mcur" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
-                <option value="BRL">BRL (R$)</option>
-                <option value="USD">USD ($)</option>
-                <option value="EUR">EUR (€)</option>
-                <option value="CNY">CNY (¥)</option>
-              </select>
+            <p style="color:#4A5568;font-size:10px;margin-top:6px">${ico.info} Tenta ler via Jina Reader. Se o site bloquear, troque para "Manual".</p>
+          </div>`;
+          const manualForm=`<div style="margin-top:10px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">
+              <div style="grid-column:1/-1">
+                <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">NOME DO PRODUTO *</label>
+                <input name="mname" type="text" placeholder="ex: iPhone 14 128GB" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+              </div>
+              <div><label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">PREÇO *</label>
+                <input name="mprice" type="text" inputmode="decimal" placeholder="ex: 3999.90" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+              </div>
+              <div><label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">MOEDA</label>
+                <select name="mcur" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+                  <option value="BRL">BRL (R$)</option><option value="USD">USD ($)</option><option value="EUR">EUR (€)</option><option value="CNY">CNY (¥)</option>
+                </select>
+              </div>
+              <div><label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">FRETE (0 = grátis)</label>
+                <input name="mfreight" type="text" inputmode="decimal" placeholder="ex: 29.90 ou 0" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+              </div>
+              <div style="grid-column:1/-1">
+                <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">LINK DO PRODUTO</label>
+                <input name="mlink" type="url" placeholder="https://..." style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+              </div>
+              <div style="grid-column:1/-1">
+                <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">OBSERVAÇÃO</label>
+                <input name="mnote" type="text" placeholder="ex: promoção Black Friday" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+              </div>
             </div>
-            <div>
-              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">FRETE (0 = grátis)</label>
-              <input name="mfreight" type="text" inputmode="decimal" placeholder="ex: 29.90 ou 0" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+            <div style="display:flex;gap:8px">
+              <button class="arow-btn primary" data-rid="${esc(r.id)}" onclick="submitManualEntry(this)" style="flex:1">${ico.check} Confirmar</button>
+              <button class="arow-btn" data-rid="${esc(r.id)}" onclick="toggleManualForm(this)">Cancelar</button>
             </div>
-            <div style="grid-column:1/-1">
-              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">LINK DO PRODUTO</label>
-              <input name="mlink" type="url" placeholder="https://..." style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
+            <p style="color:#4A5568;font-size:10px;margin-top:8px">${ico.info} Resultado marcado como "BUSCA MANUAL" — não verificado automaticamente.</p>
+          </div>`;
+          return`<div class="assisted-form" style="margin-top:10px;padding:14px;background:#0D1320;border-radius:10px;border:1px solid #1C2A3A">
+            <p style="color:#FFB800;font-size:12px;font-weight:700;margin-bottom:6px">${ico.alert} Captura assistida — ${esc(r.supplier)}</p>
+            <p style="color:#8896AA;font-size:11px;margin-bottom:10px">${esc(r.reason||"Este fornecedor precisa de captura assistida.")}</p>
+            <a href="${esc(r.manualSearchUrl||"#")}" target="_blank" rel="noopener noreferrer" class="arow-btn" style="display:inline-flex;align-items:center;gap:6px;margin-bottom:10px;color:#00D4FF;border-color:#00D4FF44">${ico.search} Abrir busca no fornecedor</a>
+            <div style="display:flex;gap:6px;margin-bottom:10px">
+              ${tabBtn("text","Colar texto")}${tabBtn("link","Colar link")}${tabBtn("manual","Manual")}
             </div>
-            <div style="grid-column:1/-1">
-              <label style="color:#4A5568;font-size:10px;font-weight:700;display:block;margin-bottom:3px">OBSERVAÇÃO</label>
-              <input name="mnote" type="text" placeholder="ex: promoção Black Friday" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:13px;padding:8px 10px;outline:none">
-            </div>
-          </div>
-          <div style="display:flex;gap:8px">
-            <button class="arow-btn primary" data-rid="${esc(r.id)}" onclick="submitManualEntry(this)" style="flex:1">
-              ${ico.check} Confirmar
-            </button>
-            <button class="arow-btn" data-rid="${esc(r.id)}" onclick="toggleManualForm(this)">
-              Cancelar
-            </button>
-          </div>
-          <p style="color:#4A5568;font-size:10px;margin-top:8px">${ico.info} Resultado marcado como "BUSCA MANUAL" — não verificado automaticamente.</p>
-        </div>`:""}
+            ${tab==="text"?textForm:tab==="link"?linkForm:manualForm}
+          </div>`;
+        })():""}
         <p style="color:#4A5568;font-size:10px;margin-top:8px;text-align:right">${fmtDate(r.ts)}</p>
       </div>
       ${expandedHTML}
@@ -1654,6 +2220,14 @@ function delResult(btn){
 function toggleManualForm(btn){
   const rid=btn.getAttribute("data-rid");
   ST.manualFormId=ST.manualFormId===rid?null:rid;
+  if(ST.manualFormId&&!ST.assistedTab)ST.assistedTab="text";
+  renderResultCards();
+}
+function setAssistedTab(btn){
+  const rid=btn.getAttribute("data-rid");
+  const tab=btn.getAttribute("data-tab");
+  ST.manualFormId=rid;
+  ST.assistedTab=tab||"text";
   renderResultCards();
 }
 
@@ -1661,7 +2235,7 @@ function submitManualEntry(btn){
   const rid=btn.getAttribute("data-rid");
   const orig=ST.results.find(r=>r.id===rid);
   if(!orig)return;
-  const form=btn.closest(".manual-entry-form");
+  const form=btn.closest(".assisted-form");
   const name=(form.querySelector("[name=mname]").value||"").trim();
   const priceRaw=(form.querySelector("[name=mprice]").value||"").trim().replace(",",".");
   const cur=(form.querySelector("[name=mcur]").value||"BRL");
@@ -1830,6 +2404,25 @@ function resetSuppliers(){
 
 function buildSupForm(){
   const d=ST.sfData||{};
+  const allowed=Array.isArray(d.allowedMethods)?d.allowedMethods:DEFAULT_METHODS;
+  const catalogText=Array.isArray(d.catalog)
+    ?d.catalog.map(c=>`${c.name} | ${c.price} | ${c.currency||"BRL"}${c.link?" | "+c.link:""}`).join("\n")
+    :"";
+  const methodLabel={
+    [SearchMethod.CATALOG]:"Catálogo local",
+    [SearchMethod.SAVED_RESULTS]:"Memória de busca",
+    [SearchMethod.PUBLIC_CONNECTOR]:"Conector público (Jina/proxy)",
+    [SearchMethod.ASSISTED]:"Captura assistida",
+    [SearchMethod.TEXT_PASTE]:"Texto colado",
+    [SearchMethod.LINK_PASTE]:"Link colado",
+    [SearchMethod.MANUAL]:"Manual",
+  };
+  const methodChecks=DEFAULT_METHODS.map(m=>{
+    const checked=allowed.includes(m)?"checked":"";
+    return`<label style="display:flex;align-items:center;gap:6px;padding:6px 8px;background:#0D1320;border:1px solid #1C2A3A;border-radius:7px;cursor:pointer;font-size:12px;color:#8896AA">
+      <input type="checkbox" data-method="${m}" ${checked} style="accent-color:#00D4FF"> ${methodLabel[m]}
+    </label>`;
+  }).join("");
   return`
     <div class="card" style="border-color:rgba(0,212,255,.28);margin-bottom:18px">
       <h3 style="color:#E8F0FE;font-size:16px;font-weight:700;margin-bottom:18px">${ST.sfMode==="edit"?"Editar":"Novo"} Fornecedor</h3>
@@ -1849,6 +2442,30 @@ function buildSupForm(){
           <div><label class="lbl">País</label><select id="sf-country" class="inp">${["Brasil","China","EUA","Alemanha","Outro"].map(o=>`<option${(d.country||"Brasil")===o?" selected":""}>${esc(o)}</option>`).join("")}</select></div>
           <div><label class="lbl">Moeda</label><select id="sf-cur" class="inp">${["BRL","USD","EUR","CNY"].map(o=>`<option${(d.cur||"BRL")===o?" selected":""}>${esc(o)}</option>`).join("")}</select></div>
         </div>
+
+        <div style="border-top:1px solid #1C2A3A;padding-top:14px">
+          <label class="lbl" style="margin-bottom:8px">Métodos permitidos para o agente</label>
+          <div id="sf-methods" style="display:grid;grid-template-columns:1fr 1fr;gap:6px">${methodChecks}</div>
+          <p style="color:#4A5568;font-size:11px;margin-top:6px">O agente tenta os métodos nesta ordem: catálogo → memória → conector → assistido.</p>
+        </div>
+
+        <div class="g2">
+          <div style="display:flex;align-items:center;gap:10px;padding:10px;background:#0D1320;border:1px solid #1C2A3A;border-radius:8px">
+            <input id="sf-pub" type="checkbox" ${d.supportsPublicSearch!==false?"checked":""} style="accent-color:#00D4FF;width:18px;height:18px">
+            <div><p style="color:#E8F0FE;font-size:13px;font-weight:600;margin:0">Permite leitura pública</p><p style="color:#4A5568;font-size:11px;margin:0">Desative se o site bloqueia bots</p></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;padding:10px;background:#0D1320;border:1px solid #1C2A3A;border-radius:8px">
+            <input id="sf-login" type="checkbox" ${d.requiresLogin?"checked":""} style="accent-color:#FFB800;width:18px;height:18px">
+            <div><p style="color:#E8F0FE;font-size:13px;font-weight:600;margin:0">Exige login</p><p style="color:#4A5568;font-size:11px;margin:0">Pula conector público automaticamente</p></div>
+          </div>
+        </div>
+
+        <div style="border-top:1px solid #1C2A3A;padding-top:14px">
+          <label class="lbl">Catálogo local (uma linha por produto)</label>
+          <p style="color:#4A5568;font-size:11px;margin-bottom:6px">Formato: <code style="background:#0D1320;padding:2px 5px;border-radius:4px;color:#00D4FF">Nome do produto | preço | moeda | link?</code> · Use # para comentários · ${Array.isArray(d.catalog)?d.catalog.length:0} produto(s) atualmente</p>
+          <textarea id="sf-catalog" rows="5" placeholder="Fonte Corsair CV650 650W 80 Plus | 399.90 | BRL\nCabo USB-C 1m | 19.90 | BRL | https://loja.com/cabo" style="width:100%;box-sizing:border-box;background:#070B14;border:1px solid #1C2A3A;border-radius:7px;color:#E8F0FE;font-size:12px;padding:8px 10px;outline:none;resize:vertical;font-family:monospace">${esc(catalogText)}</textarea>
+        </div>
+
         <div style="display:flex;align-items:center;gap:12px">
           <button id="sf-tog" class="tog${d.on!==false?" on":""}" style="background:${d.on!==false?"#00D4FF":"#1C2A3A"}" onclick="toggleSfOn()">
             <div class="tog-dot"></div>
@@ -1865,7 +2482,9 @@ function buildSupForm(){
 
 function openNewSup(){
   ST.sfMode="new";ST.sfId=null;
-  ST.sfData={name:"",site:"",url:"",type:"Nacional",country:"Brasil",cur:"BRL",note:"",on:true};
+  ST.sfData={name:"",site:"",url:"",type:"Nacional",country:"Brasil",cur:"BRL",note:"",on:true,
+    supportsPublicSearch:true,requiresLogin:false,collectionMode:"agent",
+    allowedMethods:DEFAULT_METHODS.slice(),catalog:[]};
   const area=document.getElementById("sup-form-area");
   if(area)area.innerHTML=buildSupForm();
 }
@@ -1893,11 +2512,20 @@ function saveSupForm(){
   if(!name||!site){toast("Nome e site obrigatórios","err");return}
   if(!url.includes("{q}")){toast("URL deve conter {q}","err");return}
   const on=document.getElementById("sf-tog")?.classList.contains("on")!==false;
-  const data={name,site,url,note:g("sf-note").trim(),type:g("sf-type"),country:g("sf-country"),cur:g("sf-cur"),on};
+  const supportsPublicSearch=document.getElementById("sf-pub")?.checked!==false;
+  const requiresLogin=document.getElementById("sf-login")?.checked===true;
+  const methodChecks=document.querySelectorAll("#sf-methods input[type=checkbox]");
+  const allowedMethods=Array.from(methodChecks).filter(c=>c.checked).map(c=>c.getAttribute("data-method"));
+  const catalogRaw=g("sf-catalog");
+  const catalog=parseCatalogText(catalogRaw);
+  const data={name,site,url,note:g("sf-note").trim(),type:g("sf-type"),country:g("sf-country"),cur:g("sf-cur"),on,
+    supportsPublicSearch,requiresLogin,collectionMode:"agent",
+    allowedMethods:allowedMethods.length?allowedMethods:DEFAULT_METHODS.slice(),
+    catalog};
   if(ST.sfMode==="edit")ST.suppliers=ST.suppliers.map(s=>s.id===ST.sfId?{...s,...data}:s);
   else ST.suppliers=[...ST.suppliers,{...data,id:"sup"+Date.now()}];
   ST.sfMode=null;ST.sfId=null;ST.sfData=null;
-  persist();toast("Salvo!");renderSuppliers();
+  persist();toast("Salvo! "+catalog.length+" produto(s) no catálogo");renderSuppliers();
 }
 function cancelSupForm(){
   ST.sfMode=null;ST.sfId=null;ST.sfData=null;
