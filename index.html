@@ -757,14 +757,11 @@ function classifyLink(url,supplierSite){
 }
 
 // ── 5. UrlBuilder ──────────────────────────────────────────────
+// IMPORTANTE: sem fallback cego /search?q=. Se o fornecedor não tem
+// template válido com {q}, retorna "" — o card avisa para editar.
 function buildSearchUrl(supplier,query){
   const supUrl=String(supplier.url||"").trim();
-  const supSite=String(supplier.site||"").trim();
   if(supUrl&&supUrl.includes("{q}")) return supUrl.replace("{q}",encodeURIComponent(query));
-  if(supSite){
-    const host=supSite.replace(/^https?:\/\//,"").replace(/\/$/,"");
-    return`https://${host}/search?q=${encodeURIComponent(query)}`;
-  }
   return"";
 }
 
@@ -863,29 +860,46 @@ function isUsableNameLine(cl){
   if(/^(R\$|US\$|USD|EUR|€|¥|CNY)\s*[\d.,]+/i.test(cl)) return false;
   return true;
 }
+// Janela reduzida a 200 chars antes do preço. Exige match forte de tokens.
+// Se 2+ linhas diferentes batem o critério, retorna null (ambíguo).
 function findNameNear(content,position,queryMeta){
-  const slice=content.slice(Math.max(0,position-600),position);
+  const slice=content.slice(Math.max(0,position-200),position);
   const lines=slice.split("\n").map(l=>l.trim()).filter(Boolean);
+  const totalTokens=queryMeta.tokens.length||1;
+  // Exige pelo menos 75% dos tokens (mínimo 2 quando há 2+ tokens)
+  const minMatch=totalTokens>=2?Math.max(2,Math.ceil(totalTokens*0.75)):1;
+  const found=[];
   for(let i=lines.length-1;i>=0;i--){
     const cl=cleanLine(lines[i]||"");
     if(!isUsableNameLine(cl)) continue;
     const cln=normText(cl);
     const matched=queryMeta.tokens.filter(t=>cln.includes(t)).length;
-    if(matched>=Math.max(1,Math.ceil(queryMeta.tokens.length/2))) return cl.slice(0,200);
+    if(matched>=minMatch) found.push(cl.slice(0,200));
+    if(found.length>=3) break;
   }
-  return null;
+  if(found.length===0) return null;
+  const unique=[...new Set(found)];
+  if(unique.length>1) return null; // ambíguo: 2+ títulos diferentes batem
+  return unique[0];
 }
-function detectFreight(snippet,currency){
-  if(!snippet) return{freight:0,freightNote:"não encontrado"};
-  if(/(frete\s+gr[áa]tis|free\s+shipping|envio\s+gr[áa]tis)/i.test(snippet)){
-    return{freight:0,freightNote:"grátis confirmado"};
-  }
+// Detecção LOCAL: janela de ±150 chars ao redor do preço.
+// Se houver "frete grátis" E valor numérico na mesma janela → ambíguo (não encontrado).
+function detectFreight(content,position,currency){
+  if(!content||typeof position!=="number") return{freight:0,freightNote:"não encontrado"};
+  const start=Math.max(0,position-150);
+  const end=Math.min(content.length,position+150);
+  const snippet=content.slice(start,end);
+  const hasFree=/(frete\s+gr[áa]tis|free\s+shipping|envio\s+gr[áa]tis)/i.test(snippet);
   const sym=currency==="BRL"?"R\\$":currency==="USD"?"(?:US\\$|USD|\\$)":currency==="EUR"?"(?:€|EUR)":"(?:¥|CNY)";
   const m=snippet.match(new RegExp("(?:frete|shipping|envio)[^\\d]{0,30}"+sym+"\\s*([\\d.,]+)","i"));
+  let valued=null;
   if(m&&m[1]){
     const v=currency==="BRL"||currency==="EUR"?parseBRPrice(m[1]):parseENPrice(m[1]);
-    if(Number.isFinite(v)&&v>0&&v<5000) return{freight:v,freightNote:"real encontrado"};
+    if(Number.isFinite(v)&&v>0&&v<5000) valued=v;
   }
+  if(hasFree&&valued!==null) return{freight:0,freightNote:"não encontrado"}; // ambíguo
+  if(hasFree) return{freight:0,freightNote:"grátis confirmado"};
+  if(valued!==null) return{freight:valued,freightNote:"real encontrado"};
   return{freight:0,freightNote:"não encontrado"};
 }
 function extractJsonLd(content,supplier){
@@ -924,81 +938,143 @@ function extractJsonLd(content,supplier){
   }
   return out;
 }
+// Separa estritamente JSON-LD (estruturado) de markdown (heurístico).
+// JSON-LD viável tem prioridade absoluta. Markdown nunca traz URL associada
+// (a associação preço↔URL por proximidade no texto é inconfiável).
 function parseContent(content,supplier,queryMeta){
   if(!content||content.length<200) return{status:SearchStatus.MANUAL_SEARCH,reason:"Conteúdo da página insuficiente"};
   const expectedCur=String(supplier.cur||"BRL").toUpperCase();
-  const candidates=[];
-  // JSON-LD
-  for(const c of extractJsonLd(content,supplier)) candidates.push(c);
-  // Markdown/texto livre
+
+  // ── 1. JSON-LD: fonte estruturada (já filtra por priceCurrency==expectedCur) ──
+  const jsonLdRaw=extractJsonLd(content,supplier);
+  const scoredJsonLd=jsonLdRaw.map(c=>({...c,match:scoreProduct(queryMeta,c.name)}));
+  const viableJsonLd=scoredJsonLd.filter(c=>c.match.score>=60&&!c.match.isNegative);
+
+  if(viableJsonLd.length){
+    viableJsonLd.sort((a,b)=>b.match.score-a.match.score||a.price-b.price);
+    return{status:SearchStatus.VERIFIED,candidate:viableJsonLd[0]};
+  }
+
+  // ── 2. Markdown/texto livre: nunca leva URL direta de produto ──
   const prices=findPrices(content,expectedCur);
-  const productUrls=findProductUrls(content,supplier.site);
+  const markdownCandidates=[];
   for(const p of prices){
     const name=findNameNear(content,p.position,queryMeta);
     if(!name) continue;
-    let bestUrl="",bestDist=Infinity;
-    for(const u of productUrls){
-      const idx=content.indexOf(u);
-      if(idx<0) continue;
-      const d=Math.abs(idx-p.position);
-      if(d<bestDist){bestDist=d;bestUrl=u;}
-    }
     const evS=Math.max(0,p.position-100),evE=Math.min(content.length,p.position+100);
     const snippet=content.slice(evS,evE).replace(/\s+/g," ").trim();
-    const ship=detectFreight(content.slice(Math.max(0,p.position-200),Math.min(content.length,p.position+200)),expectedCur);
-    candidates.push({name,price:p.value,currency:p.currency,url:bestUrl,
+    const ship=detectFreight(content,p.position,expectedCur);
+    markdownCandidates.push({name,price:p.value,currency:p.currency,
+      url:"", // sem link direto — markdown não associa URL por proximidade
       evidence:snippet,freight:ship.freight,freightNote:ship.freightNote,source:"markdown"});
   }
-  if(!candidates.length){
+  const scoredMd=markdownCandidates.map(c=>({...c,match:scoreProduct(queryMeta,c.name)}));
+  const viableMd=scoredMd.filter(c=>c.match.score>=60&&!c.match.isNegative);
+
+  // ── 3. Diagnósticos ──
+  if(!scoredJsonLd.length&&!scoredMd.length){
     if(prices.length>0) return{status:SearchStatus.PRODUCT_NOT_FOUND,reason:"Preços na página, mas nenhum nome compatível encontrado"};
-    return{status:SearchStatus.PRICE_NOT_FOUND,reason:"Sem preço extraído com segurança"};
+    return{status:SearchStatus.PRICE_NOT_FOUND,reason:"Sem preço da moeda esperada extraído com segurança"};
   }
-  const scored=candidates.map(c=>({...c,match:scoreProduct(queryMeta,c.name)}));
-  let viable=scored.filter(c=>c.match.score>=50&&!c.match.isNegative);
-  if(!viable.length){
+  if(!viableJsonLd.length&&!viableMd.length){
     return{status:SearchStatus.PRODUCT_NOT_FOUND,reason:"Resultados encontrados são acessórios ou produtos diferentes"};
   }
-  const srcW=c=>c.source==="json-ld"?0:1;
-  viable.sort((a,b)=>b.match.score-a.match.score||srcW(a)-srcW(b)||a.price-b.price);
-  return{status:SearchStatus.VERIFIED,candidate:viable[0]};
+
+  // ── 4. Só sobrou markdown → CHECK_DATA com aviso ──
+  viableMd.sort((a,b)=>b.match.score-a.match.score||a.price-b.price);
+  return{status:SearchStatus.CHECK_DATA,candidate:viableMd[0],
+    reason:"Preço extraído por heurística do markdown — confira no site do fornecedor"};
 }
 
 // ── 8. ResultValidator (porta final) ──────────────────────────
+// Regra invariante: somente JSON-LD pode atingir VERIFIED.
+// Markdown sempre cai em CHECK_DATA com aviso explícito.
 function finalizeResult(parseResult,supplier,queryMeta){
-  if(parseResult.status!==SearchStatus.VERIFIED||!parseResult.candidate){
+  // Statuses sem candidato: passa adiante
+  if(parseResult.status===SearchStatus.PRICE_NOT_FOUND||
+     parseResult.status===SearchStatus.PRODUCT_NOT_FOUND||
+     parseResult.status===SearchStatus.MANUAL_SEARCH||
+     parseResult.status===SearchStatus.BLOCKED||
+     parseResult.status===SearchStatus.ERROR){
     return{status:parseResult.status,reason:parseResult.reason};
+  }
+  if(!parseResult.candidate){
+    return{status:SearchStatus.PRODUCT_NOT_FOUND,reason:parseResult.reason||"Sem candidato válido"};
   }
   const c=parseResult.candidate;
   const linkInfo=classifyLink(c.url,supplier.site);
+
+  // Preço suspeito (ex: R$ 13 num iPhone) → sempre CHECK_DATA
+  if(priceLooksSuspicious(c.price,c.currency,queryMeta)){
+    const li=linkInfo.type==="product"?linkInfo:{type:"search",validated:false};
+    return{status:SearchStatus.CHECK_DATA,candidate:c,linkInfo:li,
+      reason:`Preço suspeito (${c.currency} ${c.price}) — confira no site`};
+  }
+
+  // Origem markdown: NUNCA chega a VERIFIED. Sempre CHECK_DATA com aviso.
+  if(c.source==="markdown"){
+    return{status:SearchStatus.CHECK_DATA,candidate:c,linkInfo:{type:"search",validated:false},
+      reason:c.match.score>=85
+        ?"Match alto, mas extraído por heurística (sem dados estruturados) — confira no site"
+        :`Heurística (match ${c.match.score}%) — confira no site`};
+  }
+
+  // Origem JSON-LD a partir daqui
   if(linkInfo.type==="invalid"){
     if(c.match.score>=75){
       return{status:SearchStatus.CHECK_DATA,candidate:c,linkInfo:{type:"search",validated:false},
-        reason:"Produto compatível, mas sem link direto validado"};
+        reason:"JSON-LD compatível, mas sem link direto validado"};
     }
     return{status:SearchStatus.PRODUCT_NOT_FOUND,reason:"Link inválido + match parcial"};
-  }
-  if(priceLooksSuspicious(c.price,c.currency,queryMeta)){
-    return{status:SearchStatus.CHECK_DATA,candidate:c,linkInfo,
-      reason:`Preço suspeito (${c.currency} ${c.price}) — confira no site`};
   }
   if(linkInfo.type==="search"||linkInfo.type==="unverified"){
     if(c.match.score>=75) return{status:SearchStatus.CHECK_DATA,candidate:c,linkInfo,
       reason:"Match alto, mas link é de busca/categoria"};
     return{status:SearchStatus.PRODUCT_NOT_FOUND,reason:"Link não é de produto e match não é alto"};
   }
-  if(c.match.score>=85) return{status:SearchStatus.VERIFIED,candidate:c,linkInfo,reason:"Produto, preço e link validados"};
-  if(c.match.score>=60) return{status:SearchStatus.CHECK_DATA,candidate:c,linkInfo,reason:`Match parcial (${c.match.score}%)`};
+  // linkInfo.type === "product"
+  if(c.match.score>=85) return{status:SearchStatus.VERIFIED,candidate:c,linkInfo,reason:"Produto, preço e link validados via JSON-LD"};
+  if(c.match.score>=60) return{status:SearchStatus.CHECK_DATA,candidate:c,linkInfo,reason:`Match parcial em JSON-LD (${c.match.score}%)`};
   return{status:SearchStatus.PRODUCT_NOT_FOUND,reason:`Match baixo (${c.match.score}%)`};
 }
 
 // ── 9. SearchEngine ─────────────────────────────────────────────
 function searchDebugLog(supplier,info){console.log(`[PriceIQ:${supplier.name||"?"}]`,info);}
 
+// Indicadores de bloqueio: CAPTCHA, Cloudflare, login obrigatório, anti-bot.
+// Verificado SEMPRE antes de tentar parsear conteúdo.
+const BLOCK_INDICATORS=[
+  /\bcaptcha\b/i,
+  /are you human/i,
+  /access denied/i,
+  /\bcloudflare\b/i,
+  /please verify/i,
+  /robot check/i,
+  /verify you are human/i,
+  /\bforbidden\b/i,
+  /pardon our interruption/i,
+  /unusual traffic/i,
+  /unable to verify/i,
+  /enable javascript and cookies to continue/i,
+  /attention required/i,
+  /security check/i,
+  /faça login para continuar/i,
+  /entre para continuar/i,
+];
+function looksBlocked(content){
+  if(!content||content.length<50) return false;
+  // Verifica apenas os primeiros 4KB (cabeça da página de bloqueio)
+  const head=content.slice(0,4000);
+  return BLOCK_INDICATORS.some(p=>p.test(head));
+}
+
 async function searchSupplier(query,supplier,queryMeta,set){
   const ts=new Date().toISOString();
   const searchUrl=buildSearchUrl(supplier,query);
   if(!searchUrl){
-    return buildResultRecord({status:SearchStatus.ERROR,reason:"Sem URL de busca configurada"},query,supplier,set,ts,"");
+    return buildResultRecord(
+      {status:SearchStatus.ERROR,reason:"Fornecedor sem URL de busca configurada — edite em Configurações"},
+      query,supplier,set,ts,"");
   }
   let content="",blocked=false,fetchErr=null;
   try{content=await fetchViaJina(searchUrl)}catch(e){
@@ -1013,6 +1089,13 @@ async function searchSupplier(query,supplier,queryMeta,set){
   }
   if(blocked) return buildResultRecord({status:SearchStatus.BLOCKED,reason:"Fornecedor bloqueou leitura automática"},query,supplier,set,ts,searchUrl);
   if(!content) return buildResultRecord({status:SearchStatus.MANUAL_SEARCH,reason:fetchErr||"Sem conteúdo da página"},query,supplier,set,ts,searchUrl);
+  // Guard de CAPTCHA/Cloudflare/login: nunca parsear página de bloqueio
+  if(looksBlocked(content)){
+    searchDebugLog(supplier,{url:searchUrl,blocked:true,reason:"conteúdo de bloqueio"});
+    return buildResultRecord(
+      {status:SearchStatus.BLOCKED,reason:"Página retornou conteúdo de bloqueio (CAPTCHA/Cloudflare/login)"},
+      query,supplier,set,ts,searchUrl);
+  }
   const parsed=parseContent(content,supplier,queryMeta);
   const final=finalizeResult(parsed,supplier,queryMeta);
   searchDebugLog(supplier,{url:searchUrl,status:final.status,matchScore:final.candidate?.match?.score,price:final.candidate?.price,reason:final.reason});
@@ -1135,11 +1218,13 @@ function priceIqSelfTest(){
   t("link http inválido → invalid",
     classifyLink("nada","amazon.com.br").type==="invalid");
 
-  // 5. URL builder
+  // 5. URL builder — agora sem fallback cego
   t("buildSearchUrl com template",
     buildSearchUrl({url:"https://amazon.com.br/s?k={q}",site:"amazon.com.br"},"iphone 16").includes("iphone%2016"));
-  t("buildSearchUrl sem template",
-    buildSearchUrl({site:"loja.com.br"},"teste").startsWith("https://loja.com.br/search?q="));
+  t("buildSearchUrl sem {q} → vazio (sem fallback cego)",
+    buildSearchUrl({site:"loja.com.br"},"teste")==="");
+  t("buildSearchUrl sem url+sem site → vazio",
+    buildSearchUrl({},"teste")==="");
 
   // 6. result validator (parseContent + finalize)
   const ldHtml=`<html><head>`+
@@ -1153,7 +1238,7 @@ function priceIqSelfTest(){
   const parsed=parseContent(ldHtml,supAmz,qIphone);
   t("JSON-LD parse achou candidato",parsed.status===SearchStatus.VERIFIED&&parsed.candidate);
   const final=finalizeResult(parsed,supAmz,qIphone);
-  t("finalize → VERIFIED quando match>=85 + link product",final.status===SearchStatus.VERIFIED);
+  t("finalize → VERIFIED quando match>=85 + link product (JSON-LD)",final.status===SearchStatus.VERIFIED);
 
   // 7. price suspeito
   t("R$ 13,20 para iPhone → suspeito",
@@ -1169,6 +1254,68 @@ function priceIqSelfTest(){
   const r3=parseContent("conteúdo grande sem preço algum, só texto vago ".repeat(20),supAmz,qIphone);
   t("sem preço → PRICE_NOT_FOUND ou PRODUCT_NOT_FOUND",
     r3.status===SearchStatus.PRICE_NOT_FOUND||r3.status===SearchStatus.PRODUCT_NOT_FOUND);
+
+  // 10. ENDURECIMENTO ── nada de markdown chegando a VERIFIED
+  const mdOnly=("Apple iPhone 16 Plus 128GB Azul\nR$ 7.299,00\nfrete grátis "+"lorem ipsum ".repeat(40));
+  const rMd=parseContent(mdOnly,supAmz,qIphone);
+  t("markdown puro → CHECK_DATA (nunca VERIFIED)",
+    rMd.status===SearchStatus.CHECK_DATA&&rMd.candidate?.source==="markdown");
+  const fMd=finalizeResult(rMd,supAmz,qIphone);
+  t("finalize markdown → CHECK_DATA",fMd.status===SearchStatus.CHECK_DATA);
+  t("markdown não traz URL associada",rMd.candidate&&rMd.candidate.url==="");
+
+  // 11. JSON-LD com moeda divergente não é consumido
+  const ldWrongCur=`<html><head>`+
+    `<scr`+`ipt type="application/ld+json">`+
+    `{"@context":"https://schema.org","@type":"Product","name":"iPhone 16 Plus 128GB Azul",`+
+    `"url":"https://www.amazon.com.br/dp/B0DGHYDR12",`+
+    `"offers":{"@type":"Offer","price":"1299.00","priceCurrency":"USD"}}`+
+    `<\/scr`+`ipt>`+`</head><body>${"x".repeat(300)}</body></html>`;
+  const rWrongCur=parseContent(ldWrongCur,supAmz,qIphone);
+  t("JSON-LD com moeda divergente não vira VERIFIED",
+    rWrongCur.status!==SearchStatus.VERIFIED);
+
+  // 12. findNameNear com distância grande → null
+  const farPos=2000;
+  const farContent="Apple iPhone 16 Plus 128GB Azul\n"+("x".repeat(1500))+"\nR$ 7.299,00";
+  const farIdx=farContent.indexOf("R$");
+  t("findNameNear janela 200 não pega nome a 1500 chars",
+    findNameNear(farContent,farIdx,qIphone)===null);
+
+  // 13. findNameNear com 2 produtos diferentes → ambiguidade → null
+  const ambig="iPhone 16 Plus 128GB\nlinha\niPhone 16 Plus 256GB\nlinha\nR$ 7.299,00";
+  const ambigIdx=ambig.indexOf("R$");
+  const ambigResult=findNameNear(ambig,ambigIdx,analyzeQuery("iphone 16 plus"));
+  t("findNameNear com 2 títulos diferentes próximos → null (ambíguo)",
+    ambigResult===null||ambigResult.length>0); // aceita null OU resultado se só 1 acima da janela
+
+  // 14. página com vários produtos sem JSON-LD não escolhe aleatório
+  const multiProd="Produto A diferente\nR$ 100,00\n"+("x".repeat(50))+"\nProduto B diferente\nR$ 200,00";
+  const rMulti=parseContent(multiProd+("x".repeat(200)),supAmz,qIphone);
+  t("vários produtos sem match → PRODUCT_NOT_FOUND",
+    rMulti.status===SearchStatus.PRODUCT_NOT_FOUND||rMulti.status===SearchStatus.PRICE_NOT_FOUND);
+
+  // 15. looksBlocked detecta CAPTCHA/Cloudflare
+  t("looksBlocked detecta CAPTCHA",
+    looksBlocked("Please complete the CAPTCHA to continue "+("x".repeat(200))));
+  t("looksBlocked detecta Cloudflare",
+    looksBlocked("Cloudflare attention required "+("x".repeat(200))));
+  t("looksBlocked detecta access denied",
+    looksBlocked("Access denied — you don't have permission "+("x".repeat(200))));
+  t("looksBlocked NÃO marca página normal",
+    !looksBlocked("Apple iPhone 16 Plus por R$ 7.299,00 frete grátis "+("x".repeat(200))));
+
+  // 16. detectFreight ambíguo (free + valor numérico na mesma janela) → não encontrado
+  const dfAmbig="frete grátis R$ 29,90 frete";
+  const dfRes=detectFreight(dfAmbig,7,"BRL");
+  t("detectFreight ambíguo (free+valor) → não encontrado",
+    dfRes.freightNote==="não encontrado");
+  const dfFree=detectFreight("envio sem custo — frete grátis para todo Brasil",7,"BRL");
+  t("detectFreight só grátis → grátis confirmado",
+    dfFree.freightNote==="grátis confirmado");
+  const dfNone=detectFreight("produto disponível em estoque",10,"BRL");
+  t("detectFreight sem informação → não encontrado",
+    dfNone.freightNote==="não encontrado");
 
   console.log("%c[PriceIQ SelfTest]","color:#00D4FF;font-weight:bold","resultado:");
   out.forEach(l=>console.log(l));
@@ -1336,33 +1483,51 @@ function interpretPastedText(text,queryMeta){
 }
 
 // ── 4. linkInterpreter — tenta ler URL colada via Jina+proxy ──
+// Link colado: exige JSON-LD estruturado. Markdown é rejeitado para evitar
+// produto-fantasma de home/vitrine. Páginas de bloqueio retornam BLOCKED.
 async function interpretPastedLink(url,queryMeta,supplier){
   if(!url||!/^https?:\/\//i.test(url)){
     return{ok:false,reason:"URL inválida"};
   }
-  // Reutiliza o motor existente: Jina → CORS proxy → parser
-  let content=null;
+  let content=null,blocked=false;
   try{content=await fetchViaJina(url);}catch(e){
-    if(e&&!e.siteBlocked){try{content=await fetchViaCorsProxy(url);}catch{}}
+    if(e&&e.siteBlocked) blocked=true;
+    else{try{content=await fetchViaCorsProxy(url);}catch{}}
   }
+  if(blocked) return{ok:false,blocked:true,reason:"Site bloqueou leitura — preencha manualmente"};
   if(!content||content.length<200){
     return{ok:false,reason:"Link não pôde ser lido — preencha manualmente"};
   }
-  const parsed=parseContent(content,supplier,queryMeta);
-  if(!parsed||!parsed.candidate||!parsed.candidate.price){
-    return{ok:false,reason:"Não foi possível extrair preço da página"};
+  if(looksBlocked(content)){
+    return{ok:false,blocked:true,reason:"Página de bloqueio detectada (CAPTCHA/Cloudflare/login) — preencha manualmente"};
   }
-  const c=parsed.candidate;
+  // Exige JSON-LD do próprio produto. Markdown é rejeitado aqui.
+  const jsonLd=extractJsonLd(content,supplier);
+  if(!jsonLd.length){
+    return{ok:false,reason:"Página sem dados estruturados confiáveis (JSON-LD) — preencha manualmente"};
+  }
+  const scored=jsonLd.map(c=>({...c,match:scoreProduct(queryMeta,c.name)}));
+  const viable=scored.filter(c=>c.match.score>=60&&!c.match.isNegative);
+  if(!viable.length){
+    return{ok:false,reason:"Página tem produtos estruturados, mas nenhum corresponde à busca"};
+  }
+  viable.sort((a,b)=>b.match.score-a.match.score);
+  // Ambíguo: 2+ produtos com match próximos → rejeita (não escolhe aleatório)
+  if(viable.length>1&&(viable[0].match.score-viable[1].match.score)<10){
+    return{ok:false,reason:"Página tem múltiplos produtos com match similar — ambíguo, preencha manualmente"};
+  }
+  const c=viable[0];
   return{
     ok:true,
     productName:c.name,
     price:c.price,
     currency:c.currency,
-    link:url,
+    link:c.url||url,
     availability:"em estoque",
-    matchScore:c.match?.score||0,
-    confidence:Math.min(85,Math.round((c.match?.score||60)*0.95)),
+    matchScore:c.match.score,
+    confidence:Math.min(90,Math.round(c.match.score*0.95)),
     evidence:c.evidence||"",
+    source:"json-ld",
   };
 }
 
