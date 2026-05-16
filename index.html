@@ -220,7 +220,7 @@ function migrateSuppliers(){
     if(typeof out.requiresLogin!=="boolean")out.requiresLogin=false;
     if(!out.collectionMode)out.collectionMode="agent";
     if(!Array.isArray(out.allowedMethods)||!out.allowedMethods.length){
-      out.allowedMethods=DEFAULT_METHODS.slice();
+      out.allowedMethods=["catalog","saved_results","public_connector","assisted","text_paste","link_paste","manual"];
       changed=true;
     }
     return out;
