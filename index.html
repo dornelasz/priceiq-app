@@ -146,7 +146,7 @@ const DEF_SUP=[
   {id:"amzu",name:"Amazon USA",  site:"amazon.com",           url:"https://www.amazon.com/s?k={q}",                      type:"Internacional",country:"EUA",  cur:"USD",on:false,note:"Amazon americana"},
 ];
 const DEF_SET={usd:0,eur:0,cny:0,freight:25,margin:30,
-  apiKey:"",geminiModel:"gemini-2.5-flash-lite",rateSource:"",rateTime:"",rateTimestamp:0,
+  rateSource:"",rateTime:"",rateTimestamp:0,
   usdRateSource:"",eurRateSource:"",cnyRateSource:"",
   usdRateTime:"",eurRateTime:"",cnyRateTime:"",
   usdRateTimestamp:0,eurRateTimestamp:0,cnyRateTimestamp:0,
@@ -231,11 +231,6 @@ function esc(s){
 function fmt(n){return typeof n==="number"?n.toFixed(2):String(n||"0.00")}
 function fmt4(n){return typeof n==="number"?n.toFixed(4):String(n||"0.0000")}
 function fmtDate(iso){try{return new Date(iso).toLocaleString("pt-BR")}catch{return iso||""}}
-function isQuotaError(e){
-  const msg=String(e?.message||e||"").toLowerCase();
-  return msg.includes("quota")||msg.includes("429")||msg.includes("resource_exhausted")||msg.includes("rate limit")||msg.includes("limite")||msg.includes("exceeded");
-}
-
 // ══════════════════════════════════════════════════════
 // TOAST
 // ══════════════════════════════════════════════════════
@@ -303,60 +298,6 @@ const ico={
   info:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`,
   shield:`<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`,
 };
-
-// ══════════════════════════════════════════════════════
-// CLAUDE API
-// ══════════════════════════════════════════════════════
-function getGeminiApiKey(){
-  return String(ST.settings.apiKey||LS.g("piq_gemini_key","")||"").trim();
-}
-function getGeminiModel(){
-  return String(ST.settings.geminiModel||"gemini-2.5-flash-lite").trim();
-}
-async function callGemini(prompt,maxTokens=2500,useSearch=true){
-  const apiKey=getGeminiApiKey();
-  if(!apiKey){
-    throw new Error("Gemini API Key não configurada. Vá em Configurações, cole a chave e salve.");
-  }
-  const model=getGeminiModel();
-  const body={
-    contents:[{role:"user",parts:[{text:prompt}]}],
-    generationConfig:{temperature:0.1,maxOutputTokens:maxTokens}
-  };
-  if(useSearch) body.tools=[{google_search:{}}];
-  const r=await fetch("https://generativelanguage.googleapis.com/v1beta/models/"+encodeURIComponent(model)+":generateContent?key="+encodeURIComponent(apiKey),{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify(body)
-  });
-  const d=await r.json().catch(()=>({}));
-  if(!r.ok){
-    throw new Error(d?.error?.message||("Erro Gemini HTTP "+r.status));
-  }
-  const out=(d.candidates?.[0]?.content?.parts||[]).map(p=>p.text||"").join("\n").trim();
-  if(!out){
-    const reason=d.candidates?.[0]?.finishReason||"resposta vazia";
-    throw new Error("Gemini respondeu vazio: "+reason);
-  }
-  return out;
-}
-// Mantém o nome antigo para não quebrar o restante do app.
-async function callClaude(prompt,maxTokens=2500){
-  return callGemini(prompt,maxTokens,true);
-}
-async function testGeminiAPI(){
-  try{
-    const raw=await callGemini('Responda apenas este JSON: {"ok":true,"message":"Gemini funcionando"}',300,false);
-    const p=parseJson(raw);
-    if(p&&p.ok){toast("Gemini funcionando!","ok");return true;}
-    toast("Gemini respondeu, mas não retornou JSON esperado.","err");
-    return false;
-  }catch(e){
-    if(isQuotaError(e))toast("Quota Gemini esgotada. Aguarde até meia-noite UTC ou troque de modelo.","err");
-    else toast("Erro Gemini: "+(e.message||e),"err");
-    return false;
-  }
-}
 
 function parseJson(raw){
   if(!raw)return null;
@@ -872,10 +813,37 @@ async function fetchPageViaJina(url){
     headers:{"Accept":"text/plain","X-Return-Format":"text","X-Timeout":"15"},
     signal:AbortSignal.timeout(20000)
   });
-  if(!r.ok)throw new Error("Jina HTTP "+r.status);
+  if(!r.ok){
+    if(r.status===451||r.status===403||r.status===429){
+      const e=new Error("Fornecedor bloqueou leitura automática");
+      e.siteBlocked=true;
+      throw e;
+    }
+    throw new Error("Conteúdo não disponível (HTTP "+r.status+")");
+  }
   const txt=await r.text();
-  // Retorna os primeiros 8000 chars — suficiente para ver lista de resultados
   return txt.slice(0,8000);
+}
+
+// Busca via CORS proxy (fallback quando Jina não consegue acessar o site)
+async function fetchViaCorsProxy(url){
+  const proxies=[
+    u=>"https://corsproxy.io/?"+encodeURIComponent(u),
+    u=>"https://api.allorigins.win/raw?url="+encodeURIComponent(u),
+  ];
+  for(const mkProxy of proxies){
+    try{
+      const r=await fetch(mkProxy(url+(_t=>"?_t="+Date.now())()), {
+        signal:AbortSignal.timeout(15000),cache:"no-store"
+      });
+      if(!r.ok)continue;
+      const txt=await r.text();
+      if(txt&&txt.length>200)return txt.slice(0,100000);
+    }catch{}
+  }
+  const e=new Error("Fornecedor bloqueou leitura automática");
+  e.siteBlocked=true;
+  throw e;
 }
 
 // Detecta se uma URL aponta para uma página de produto específico (não busca/categoria)
@@ -891,7 +859,7 @@ function isProductUrl(url){
   );
 }
 
-// Converte resposta bruta do Gemini em objeto de resultado padronizado
+// Converte dados extraídos em objeto de resultado padronizado
 function buildResult(p,product,sup,set,queryMeta,fallbackSearchUrl){
   if(!p||!p.found)return{found:false};
   const price=parseFloat(p.price)||0;
@@ -981,13 +949,15 @@ async function searchOneSupplier(product,sup,queryMeta){
   }
 
   const errors=[];
+  let siteBlocked=false;
 
-  // ── Fetch via Jina Reader (converte HTML em markdown limpo) ──
+  // ── Passo 1: Jina Reader (converte HTML em markdown limpo) ──
   let pageContent="";
   try{
     pageContent=await fetchPageViaJina(searchUrl);
   }catch(e){
-    errors.push("Jina: "+e.message);
+    if(e.siteBlocked)siteBlocked=true;
+    else errors.push(e.message);
     console.warn("[PriceIQ] Jina falhou",supName,e.message);
   }
 
@@ -997,155 +967,29 @@ async function searchOneSupplier(product,sup,queryMeta){
     if(r&&r.error)errors.push(r.error);
   }
 
+  // ── Passo 2: CORS proxy — HTML direto quando Jina falha por razão que não seja bloqueio ──
+  if(!siteBlocked&&!pageContent){
+    let rawHtml="";
+    try{
+      rawHtml=await fetchViaCorsProxy(searchUrl);
+    }catch(e){
+      if(e.siteBlocked)siteBlocked=true;
+      else errors.push(e.message);
+    }
+    if(rawHtml&&rawHtml.length>=200){
+      const r=extractFromContent(rawHtml,sup,product,supCur,searchUrl,set,queryMeta);
+      if(r&&r.found)return r;
+    }
+  }
+
+  if(siteBlocked)return{found:false,error:"Fornecedor bloqueou leitura automática"};
   const errSummary=errors.length?errors.slice(0,2).join(" | "):"produto não encontrado";
   return{found:false,error:errSummary};
 }
 
-// ── FUNÇÃO LEGADA (mantida para compatibilidade, não é chamada) ──
-async function searchSupplier(product,sup,queryMeta){
-  const set=ST.settings;
-  const isIntl=["aliexpress.com","alibaba.com","amazon.com"].includes(sup.site);
-  const lang=isIntl?"(search in English)":"(buscar em português)";
-  const rate=sup.cur==="USD"?set.usd:sup.cur==="EUR"?set.eur:sup.cur==="CNY"?set.cny:1;
-  const ratePair=sup.cur==="BRL"?"BRL":sup.cur+"/BRL";
-
-  // Termos de exclusão formatados para o prompt
-  const exclusionText=(!queryMeta.isSearchingAccessory&&queryMeta.exclusionTerms.length)
-    ?`\nEXCLUSÕES (rejeite resultados que sejam): ${queryMeta.exclusionTerms.slice(0,8).join(", ")}`
-    :"";
-
-  const prompt=`Você é um agente de comparação de preços. Sua missão é encontrar o produto EXATO abaixo no site indicado e retornar dados 100% reais.
-
-PRODUTO: "${product}" ${lang}
-SITE: ${sup.site} (${sup.name})
-MOEDA: ${sup.cur}
-${exclusionText}
-
-PASSO 1 — Use web_search: ${product} site:${sup.site}
-PASSO 2 — Analise os resultados. Encontre o produto mais parecido com "${product}".
-PASSO 3 — Preencha o JSON abaixo com dados REAIS extraídos dos resultados.
-
-RETORNE APENAS este JSON, sem texto antes ou depois:
-{
-  "found": true,
-  "productName": "nome exato como aparece no site",
-  "sellerName": "nome do vendedor se visível, ou ''",
-  "sellerRating": "nota do vendedor se visível, ou ''",
-  "sellerReviews": 0,
-  "productRating": "nota do produto se visível, ou ''",
-  "productReviews": 0,
-  "price": 0.00,
-  "priceMin": 0.00,
-  "priceMax": 0.00,
-  "currency": "${sup.cur}",
-  "link": "https://url-real-do-produto-especifico",
-  "available": true,
-  "sellers": 1,
-  "freight": 0.00,
-  "freightNote": "grátis confirmado|real encontrado|não encontrado",
-  "freightSourceText": "trecho que confirma o frete ou ''",
-  "needsManualFreightCheck": false,
-  "priceType": "real|a_partir_de|faixa|não_encontrado",
-  "priceSourceText": "trecho curto que prova o preço",
-  "isExactProduct": true,
-  "exactMatchScore": 85,
-  "priceConfidence": 85,
-  "totalConfidence": 85,
-  "warnings": [],
-  "note": ""
-}
-
-REGRAS ABSOLUTAS:
-1. price: número puro extraído da página (ex: 1299.90). NÃO invente.
-2. Se encontrar múltiplos vendedores: price=média, priceMin=menor, priceMax=maior, sellers=quantidade
-3. freight: valor real da página. Se "frete grátis" → 0 e freightNote:"grátis confirmado". Se não aparecer → freight:0, freightNote:"não encontrado", needsManualFreightCheck:true
-4. link: URL REAL do produto (não página de busca). Deve conter o domínio ${sup.site}
-5. sellerName, sellerRating, productRating: preencha APENAS se aparecer claramente. Se não aparecer, deixe ''
-6. exactMatchScore: 0-100 quão parecido é com "${product}"
-7. priceConfidence: 0-100 quão confiável é o preço
-8. totalConfidence: média dos scores
-9. Se não encontrar produto relevante: {"found":false,"reason":"motivo"}
-10. NÃO invente vendedor, avaliação, reviews ou frete`;
-
-  try{
-    const raw=await callClaude(prompt,2500);
-    const p=parseJson(raw);
-    if(!p||!p.found)return{found:false};
-
-    // Validação JS pós-retorno
-    const validation=validateResult(p,queryMeta,sup);
-    if(!validation.ok){
-      console.warn("[PriceIQ] Rejeitado",sup.name,":",validation.reasons.join("; "));
-      return{found:false,rejectedReasons:validation.reasons};
-    }
-
-    const price=parseFloat(p.price)||0;
-    const freight=parseFloat(p.freight)||0;
-    const priceMin=parseFloat(p.priceMin)||price;
-    const priceMax=parseFloat(p.priceMax)||price;
-    const total=price+freight;
-    const cur=String(p.currency||sup.cur).toUpperCase();
-    const rateUsed=cur==="USD"?set.usd:cur==="EUR"?set.eur:cur==="CNY"?set.cny:1;
-    const brl=parseFloat((total*rateUsed).toFixed(2));
-    const priceBRL=parseFloat((price*rateUsed).toFixed(2));
-    const minBrl=parseFloat((priceMin*rateUsed).toFixed(2));
-    const maxBrl=parseFloat((priceMax*rateUsed).toFixed(2));
-    const freightBRL=parseFloat((freight*rateUsed).toFixed(2));
-
-    return{
-      found:true,
-      id:"r"+Date.now()+Math.random().toString(36).slice(2,6),
-      productName:String(p.productName||product).slice(0,150),
-      supplier:sup.name,supId:sup.id,
-      // TAREFA 7 — Vendedor
-      sellerName:String(p.sellerName||""),
-      sellerRating:String(p.sellerRating||""),
-      sellerReviews:parseInt(p.sellerReviews)||0,
-      // TAREFA 8 — Avaliação
-      productRating:String(p.productRating||""),
-      productReviews:parseInt(p.productReviews)||0,
-      // TAREFA 5 — Preço real
-      price,priceMin,priceMax,
-      currency:cur,
-      // TAREFA 2 — Conversão
-      originalCurrency:cur,
-      exchangePair:ratePair,
-      exchangeRateUsed:rateUsed,
-      priceBRL,
-      rateSource:set.rateSource||"Investing.com",
-      rateTime:set.rateTime||"",
-      rateTimestamp:set.rateTimestamp||0,
-      // Totais
-      freight,total,brl,
-      freightBRL,
-      priceMinBrl:minBrl,priceMaxBrl:maxBrl,
-      // TAREFA 6 — Frete
-      freeShip:p.freightNote==="grátis confirmado",
-      freightNote:String(p.freightNote||"não encontrado"),
-      freightSourceText:String(p.freightSourceText||""),
-      needsManualFreightCheck:!!p.needsManualFreightCheck||(p.freightNote==="não encontrado"),
-      // TAREFA 9 — Link
-      link:String(p.link||sup.url.replace("{q}",encodeURIComponent(product))),
-      available:p.available!==false,
-      sellers:parseInt(p.sellers)||1,
-      priceType:String(p.priceType||"real"),
-      priceSourceText:String(p.priceSourceText||""),
-      // TAREFA 4 — Scores
-      exactMatchScore:parseInt(p.exactMatchScore)||75,
-      priceConfidence:parseInt(p.priceConfidence)||75,
-      totalConfidence:parseInt(p.totalConfidence)||75,
-      warnings:Array.isArray(p.warnings)?p.warnings:[],
-      note:String(p.note||""),
-      ts:new Date().toISOString()
-    };
-  }catch(err){
-    console.error("[PriceIQ]",sup.name,err.message);
-    return{found:false};
-  }
-}
 
 // ══════════════════════════════════════════════════════
-// TAREFA 12+14 — ANÁLISE FINAL COM IA
+// ANÁLISE FINAL DE RESULTADOS
 // ══════════════════════════════════════════════════════
 async function aiAnalyze(product,results){
   const set=ST.settings;
@@ -1178,138 +1022,6 @@ async function aiAnalyze(product,results){
 }
 
 
-function supplierLine(s){
-  return `- id:${s.id} | nome:${s.name} | site:${s.site} | moeda padrão:${s.cur} | país:${s.country} | link busca:${s.url}`;
-}
-
-async function searchAllSuppliers(product,targets,queryMeta){
-  const set=ST.settings;
-  const supplierList=targets.map(supplierLine).join("\n");
-  const prompt=`Você é um agente especialista em comparação de preços. Pesquise o produto abaixo em TODOS os fornecedores listados usando Google Search e retorne dados 100% reais.
-
-PRODUTO: "${product}"
-
-FORNECEDORES ATIVOS (pesquise todos):
-${supplierList}
-
-INSTRUÇÕES DE PESQUISA:
-1. Para cada fornecedor, use busca: "${product}" site:DOMINIO
-2. Analise os resultados e identifique o produto correto — NÃO retorne acessórios, capas, cabos, peças ou produtos genéricos similares, a menos que o usuário tenha pesquisado exatamente isso.
-3. Se encontrar MÚLTIPLOS produtos para o mesmo fornecedor, selecione o MELHOR usando este critério de custo-benefício:
-   a) Calcule um score: score = (avaliação_produto * 20) + (reviews / 100) - (preço_relativo * 15)
-   b) Priorize: produto com avaliação ≥ 4.0 + menor preço + mais reviews
-   c) Se houver produto 30% mais caro mas com avaliação muito superior (≥4.5 vs <3.5), prefira o mais barato
-   d) NUNCA retorne produto sem avaliação quando houver alternativa equivalente com avaliação
-4. Colete: preço real visível, avaliação do produto, número de avaliações, nome do vendedor se disponível, frete, link direto do produto.
-5. NÃO invente nenhum dado. Se não encontrar preço real, retorne found:false para esse fornecedor.
-
-SELEÇÃO DO MELHOR PRODUTO (regra de ouro):
-- Menor preço + boa avaliação (≥3.5) = ESCOLHER
-- Menor preço sem avaliação nenhuma + alternativa com avaliação = ESCOLHER a com avaliação
-- Diferença de até 20% no preço com avaliação muito melhor = ESCOLHER a melhor avaliada
-
-REGRAS DE FRETE:
-- "Frete grátis" confirmado → freight:0, freightNote:"grátis confirmado"
-- Valor real encontrado → use o valor, freightNote:"real encontrado"
-- Não encontrado → freight:0, freightNote:"não encontrado", needsManualFreightCheck:true
-
-RETORNE APENAS JSON VÁLIDO neste formato exato:
-{
-  "results":[
-    {
-      "supplierId":"ml",
-      "found":true,
-      "productName":"nome exato do produto escolhido como melhor custo-benefício",
-      "sellerName":"vendedor se encontrado ou vazio",
-      "sellerRating":"avaliação do vendedor se encontrada ou vazio",
-      "sellerReviews":0,
-      "productRating":"avaliação real do produto (ex: 4.5) ou vazio se não encontrada",
-      "productReviews":0,
-      "price":0.00,
-      "priceMin":0.00,
-      "priceMax":0.00,
-      "currency":"BRL",
-      "link":"https://link-real-e-direto-do-produto",
-      "available":true,
-      "sellers":1,
-      "freight":0.00,
-      "freightNote":"grátis confirmado|real encontrado|não encontrado",
-      "needsManualFreightCheck":false,
-      "priceType":"real|a_partir_de|faixa|não_encontrado",
-      "priceSourceText":"trecho curto que comprova o preço",
-      "isExactProduct":true,
-      "exactMatchScore":85,
-      "priceConfidence":85,
-      "totalConfidence":85,
-      "warnings":[],
-      "note":"motivo da escolha se houver múltiplos produtos disponíveis"
-    }
-  ]
-}`;
-
-  const raw=await callClaude(prompt,5500);
-  const parsed=parseJson(raw);
-  const arr=Array.isArray(parsed)?parsed:(Array.isArray(parsed?.results)?parsed.results:[]);
-  const out=[];
-  for(const p of arr){
-    const sup=targets.find(s=>s.id===p.supplierId||s.name===p.supplier||s.name===p.supplierName);
-    if(!sup) continue;
-    if(!p||p.found===false||!p.productName||!(parseFloat(p.price)>0)) continue;
-    const validation=validateResult(p,queryMeta,sup);
-    if(!validation.ok){
-      console.warn("[PriceIQ] Rejeitado",sup.name,":",validation.reasons.join("; "));
-      continue;
-    }
-    const price=parseFloat(p.price)||0;
-    const freight=parseFloat(p.freight)||0;
-    const priceMin=parseFloat(p.priceMin)||price;
-    const priceMax=parseFloat(p.priceMax)||price;
-    const total=price+freight;
-    const cur=String(p.currency||sup.cur).toUpperCase();
-    const rateUsed=cur==="USD"?set.usd:cur==="EUR"?set.eur:cur==="CNY"?set.cny:1;
-    const brl=parseFloat((total*rateUsed).toFixed(2));
-    const priceBRL=parseFloat((price*rateUsed).toFixed(2));
-    const freightBRL=parseFloat((freight*rateUsed).toFixed(2));
-    const minBrl=parseFloat((priceMin*rateUsed).toFixed(2));
-    const maxBrl=parseFloat((priceMax*rateUsed).toFixed(2));
-    out.push({
-      found:true,
-      id:"r"+Date.now()+Math.random().toString(36).slice(2,6),
-      productName:String(p.productName||product).slice(0,150),
-      supplier:sup.name,supId:sup.id,
-      sellerName:String(p.sellerName||""),
-      sellerRating:String(p.sellerRating||""),
-      sellerReviews:parseInt(p.sellerReviews)||0,
-      productRating:String(p.productRating||p.rating||""),
-      productReviews:parseInt(p.productReviews||p.reviews)||0,
-      price,priceMin,priceMax,
-      currency:cur,originalCurrency:cur,
-      exchangePair:cur==="BRL"?"BRL":cur+"/BRL",
-      exchangeRateUsed:rateUsed,
-      priceBRL,
-      rateSource:set.rateSource||"Investing.com",
-      rateTime:set.rateTime||"",
-      rateTimestamp:set.rateTimestamp||0,
-      freight,total,brl,freightBRL,
-      priceMinBrl:minBrl,priceMaxBrl:maxBrl,
-      freeShip:p.freightNote==="grátis confirmado"||p.freightNote==="grátis",
-      freightNote:String(p.freightNote||"não encontrado"),
-      needsManualFreightCheck:!!p.needsManualFreightCheck||(p.freightNote==="não encontrado"),
-      link:String(p.link||sup.url.replace("{q}",encodeURIComponent(product))),
-      available:p.available!==false,
-      sellers:parseInt(p.sellers)||1,
-      priceType:String(p.priceType||"real"),
-      priceSourceText:String(p.priceSourceText||""),
-      exactMatchScore:parseInt(p.exactMatchScore)||75,
-      priceConfidence:parseInt(p.priceConfidence)||75,
-      totalConfidence:parseInt(p.totalConfidence)||75,
-      warnings:Array.isArray(p.warnings)?p.warnings:[],
-      note:String(p.note||""),
-      ts:new Date().toISOString()
-    });
-  }
-  return out;
-}
 
 // ══════════════════════════════════════════════════════
 // SEARCH FLOW — por fornecedor, com progresso ao vivo
@@ -1997,26 +1709,6 @@ function renderSettings(){
     <h2 style="color:#E8F0FE;font-size:20px;font-weight:800;margin-bottom:20px">Configurações</h2>
     <div style="display:flex;flex-direction:column;gap:14px">
 
-      <!-- Gemini API -->
-      <div class="card" style="border-color:rgba(0,212,255,.28)">
-        <p style="color:#00D4FF;font-size:13px;font-weight:700;text-transform:uppercase;margin-bottom:14px;letter-spacing:.5px">🤖 Gemini API</p>
-        <label class="lbl">Gemini API Key</label>
-        <input id="set-api" class="inp" type="password" placeholder="Cole a chave Gemini aqui" value="${esc(s.apiKey||"")}"/>
-        <div class="g2" style="margin-top:12px">
-          <div>
-            <label class="lbl">Modelo</label>
-            <select id="set-model" class="inp">
-              <option value="gemini-2.5-flash-lite" ${(s.geminiModel||"gemini-2.5-flash-lite")==="gemini-2.5-flash-lite"?"selected":""}>gemini-2.5-flash-lite</option>
-              <option value="gemini-2.5-flash" ${s.geminiModel==="gemini-2.5-flash"?"selected":""}>gemini-2.5-flash</option>
-            </select>
-          </div>
-          <div style="display:flex;align-items:end">
-            <button class="btn btn-g" onclick="testGeminiAPI()">Testar Gemini API</button>
-          </div>
-        </div>
-        <p style="color:#4A5568;font-size:11px;margin-top:10px">A chave fica salva apenas neste aparelho. Não cole a chave em chats ou repositórios públicos.</p>
-      </div>
-
       <!-- Cotação ao vivo -->
       <div class="card" style="border-color:rgba(0,212,255,.28)">
         <p style="color:#00D4FF;font-size:13px;font-weight:700;text-transform:uppercase;margin-bottom:14px;letter-spacing:.5px">💱 Cotação ao vivo — automática (1min)</p>
@@ -2095,10 +1787,7 @@ function saveSettings(){
     ...ST.settings,
     freight:parseFloat(g("set-frt"))||25,
     margin:parseFloat(g("set-mrg"))||30,
-    apiKey:String(g("set-api")||ST.settings.apiKey||"").trim(),
-    geminiModel:String(g("set-model")||ST.settings.geminiModel||"gemini-2.5-flash-lite").trim(),
   };
-  LS.s("piq_gemini_key",ST.settings.apiKey);
   persist();
   toast("Configurações salvas!");
   updateNavRateSub();
