@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Alert, Eye, Link as LinkIcon, Search as SearchIcon, Shield, Trophy } from './Icons';
+import { Alert, Eye, Link as LinkIcon, Search as SearchIcon } from './Icons';
 import { fmt, fmt4, fmtDate } from '@/lib/format';
 import type { SearchResult, Supplier } from '@/lib/types';
 
@@ -33,25 +33,22 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
     r.link_type ?? (isProductUrl(r.product_url) ? 'product' : 'search');
   const isValidatedProduct = linkType === 'product' && r.link_validated;
   const isSearchOnly = linkType === 'search';
-  const isUnverified = linkType === 'unverified' || !r.product_url;
-  const highConf = (r.confidence ?? 0) >= 85;
-  const lowConf  = (r.confidence ?? 0) > 0 && (r.confidence ?? 0) < 75;
 
   const cls = `res-card${isBest ? ' best' : ''}`;
 
   return (
     <div className={cls}>
       <div className="res-body">
-        {/* Badges */}
+        {/* Badges — objetivos, sem confidence */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
           {isBest && (
             <span className="tag" style={{ background: 'rgba(0,212,255,.12)', color: '#00D4FF', border: '1px solid rgba(0,212,255,.3)' }}>
               💰 Menor preço
             </span>
           )}
-          {highConf && (
+          {isValidatedProduct && (
             <span className="tag" style={{ background: 'rgba(0,229,160,.1)', color: '#00E5A0', border: '1px solid rgba(0,229,160,.3)' }}>
-              <Shield size={13} /> Alta confiança
+              <LinkIcon size={13} /> Link validado
             </span>
           )}
           {r.from_cache && (
@@ -64,9 +61,9 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
               Indisponível
             </span>
           )}
-          {lowConf && (
-            <span className="tag" style={{ background: 'rgba(255,184,0,.1)', color: '#FFB800', border: '1px solid rgba(255,184,0,.3)' }}>
-              <Alert size={13} /> Conferir dados
+          {r.error_message && (
+            <span className="tag" style={{ background: 'rgba(255,77,109,.1)', color: '#FF4D6D', border: '1px solid rgba(255,77,109,.3)' }}>
+              <Alert size={13} /> Erro
             </span>
           )}
           {priceDiffPct !== null && priceDiffPct !== undefined && priceDiffPct > 0 && (
@@ -103,30 +100,14 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
           </div>
         )}
 
-        {/* Grid */}
-        <div className="pgrid">
-          <div className="pcell">
-            <p className="plabel">Frete</p>
-            <p className="pval" style={{ fontSize: 12 }}>
-              {(r.freight ?? 0) > 0
-                ? `${r.currency ?? ''} ${fmt(r.freight ?? 0)}`
-                : /frete\s+gr[áa]tis\s+confirmado/i.test(r.warning ?? '')
-                  ? <span style={{ color: '#00E5A0' }}>Grátis</span>
-                  : <span style={{ color: '#FFB800' }}>Não encontrado</span>}
-            </p>
-          </div>
-          <div className="pcell">
-            <p className="plabel">Confiança</p>
-            <p className={`pval ${highConf ? 'conf-high' : lowConf ? 'conf-low' : 'conf-med'}`} style={{ fontSize: 12 }}>
-              {r.confidence ?? '—'}{r.confidence ? '%' : ''}
-            </p>
-          </div>
-          <div className="pcell">
-            <p className="plabel">Match</p>
-            <p className="pval" style={{ fontSize: 12 }}>
-              {r.match_score ?? '—'}{r.match_score ? '%' : ''}
-            </p>
-          </div>
+        {/* Frete inline */}
+        <div style={{ marginBottom: 10, fontSize: 12 }}>
+          <span style={{ color: '#4A5568', fontWeight: 700, textTransform: 'uppercase', fontSize: 10, letterSpacing: '.3px' }}>Frete: </span>
+          {(r.freight ?? 0) > 0
+            ? <span style={{ color: '#E8F0FE', fontWeight: 700 }}>{r.currency ?? ''} {fmt(r.freight ?? 0)}</span>
+            : /frete\s+gr[áa]tis\s+confirmado/i.test(r.warning ?? '')
+              ? <span style={{ color: '#00E5A0', fontWeight: 700 }}>Grátis</span>
+              : <span style={{ color: '#FFB800', fontWeight: 700 }}>Não encontrado</span>}
         </div>
 
         {/* Vendedor */}
@@ -204,8 +185,6 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
               <DetailCell label="Cotação usada" value={`${r.currency}/BRL = ${fmt4(r.exchange_rate_used)}`} />
             )}
             <DetailCell label="Disponível" value={r.available === false ? '❌ Não' : '✅ Sim'} />
-            <DetailCell label="Confiança" value={r.confidence ? `${r.confidence}%` : '—'} />
-            <DetailCell label="Match score" value={r.match_score ? `${r.match_score}%` : '—'} />
           </div>
           {r.error_message && (
             <p style={{ color: '#FFB800', fontSize: 12, padding: '7px 10px', background: '#0D1320', borderRadius: 8 }}>
