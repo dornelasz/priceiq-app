@@ -254,7 +254,7 @@ export const searchService = {
        WHERE sr.search_id = $1
        ORDER BY (sr.error_message IS NULL) DESC,
                 sr.total_brl ASC NULLS LAST,
-                sr.confidence DESC NULLS LAST`,
+                sr.collected_at DESC`,
       [searchId],
     );
     return r.rows.map(resultToApi);
@@ -287,7 +287,7 @@ export const searchService = {
        FROM search_results sr
        JOIN suppliers s ON s.id = sr.supplier_id
        WHERE sr.search_id = $1 AND sr.error_message IS NULL AND sr.total_brl IS NOT NULL
-       ORDER BY sr.total_brl ASC, sr.confidence DESC NULLS LAST
+       ORDER BY sr.total_brl ASC, sr.collected_at DESC
        LIMIT 1`,
       [searchId],
     );
