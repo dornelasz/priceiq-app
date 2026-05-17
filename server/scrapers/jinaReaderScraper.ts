@@ -25,6 +25,7 @@ import type { ResultStatus } from '../lib/resultStatus.js';
 import { extractDirectly, type DirectExtractResult } from './directExtractor.js';
 import { extractCandidates } from './productCandidateExtractor.js';
 import { extractProductPage } from './productPageExtractor.js';
+import { buildSearchUrl } from '../lib/searchUrlBuilder.js';
 
 export interface ScrapedResult {
   found: boolean;
@@ -121,12 +122,13 @@ export async function fetchViaJina(url: string, timeoutMs: number): Promise<stri
   }
 }
 
+/**
+ * Constrói a URL de busca do fornecedor seguindo as regras canônicas do
+ * searchUrlBuilder. Aceita templates com {q}, {query} ou {produto}.
+ * Sem template → fallback genérico /search?q=... (NUNCA URL de produto).
+ */
 export function buildDefaultSearchUrl(supplier: Supplier, query: string): string {
-  if (supplier.search_url_template && supplier.search_url_template.includes('{q}')) {
-    return supplier.search_url_template.replace('{q}', encodeURIComponent(query));
-  }
-  const host = supplier.site.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  return `https://${host}/search?q=${encodeURIComponent(query)}`;
+  return buildSearchUrl(supplier.search_url_template, supplier.site, query).url;
 }
 
 /**

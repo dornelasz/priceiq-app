@@ -86,11 +86,27 @@ export default function SuppliersPage() {
 
   async function saveForm() {
     try {
-      if (!form.name || !form.site || !form.search_url_template) {
-        return showToast('Nome, site e URL de busca são obrigatórios', 'err');
+      if (!form.name || !form.site) {
+        return showToast('Nome e site são obrigatórios', 'err');
       }
-      if (!form.search_url_template.includes('{q}')) {
-        return showToast('URL de busca precisa conter {q}', 'err');
+      // Site precisa parecer domínio válido (com TLD)
+      const siteOk = /^(?:https?:\/\/)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+/i.test(form.site.trim());
+      if (!siteOk) {
+        return showToast('Site precisa ser um domínio válido (ex: amazon.com.br)', 'err');
+      }
+      const template = form.search_url_template?.trim() ?? '';
+      if (template) {
+        if (!/^https?:\/\//i.test(template)) {
+          return showToast('URL de busca precisa começar com http:// ou https://', 'err');
+        }
+        const hasPlaceholder = /\{(?:q|query|produto)\}/i.test(template);
+        if (!hasPlaceholder) {
+          const ok = confirm(
+            'A URL de busca não contém {q}, {query} ou {produto}. ' +
+            'A busca por palavra-chave pode não funcionar. Deseja continuar mesmo assim?',
+          );
+          if (!ok) return;
+        }
       }
       if (formMode === 'new') {
         const created = await suppliersApi.create(form);
@@ -146,9 +162,16 @@ export default function SuppliersPage() {
               </div>
             </div>
             <div>
-              <label className="lbl">URL de busca * (use {`{q}`} para o produto)</label>
+              <label className="lbl">URL de busca (use {`{q}`}, {`{query}`} ou {`{produto}`})</label>
               <input className="inp" placeholder="https://amazon.com.br/s?k={q}" value={form.search_url_template} onChange={(e) => setForm({ ...form, search_url_template: e.target.value })} />
-              <p style={{ color: '#4A5568', fontSize: 11, marginTop: 5 }}>Exemplo: https://lista.mercadolivre.com.br/{`{q}`}</p>
+              <p style={{ color: '#4A5568', fontSize: 11, marginTop: 5 }}>
+                Exemplo: https://lista.mercadolivre.com.br/{`{q}`} · Sem template usamos /search?q=... no domínio.
+              </p>
+              {form.search_url_template && !/\{(?:q|query|produto)\}/i.test(form.search_url_template) && (
+                <p style={{ color: '#FFB800', fontSize: 11, marginTop: 5 }}>
+                  ⚠️ URL sem placeholder ({`{q}`}/{`{query}`}/{`{produto}`}) — a busca por palavra-chave pode não funcionar corretamente.
+                </p>
+              )}
             </div>
             <div>
               <label className="lbl">Observações</label>

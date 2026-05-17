@@ -1,13 +1,20 @@
 import { z } from 'zod';
+import { isValidSearchUrlTemplate, isValidSiteOrUrl } from './searchUrlBuilder.js';
 
 // ─── Suppliers ───────────────────────────────────────────
 
 export const supplierCreateSchema = z.object({
   name: z.string().min(1).max(120),
-  site: z.string().min(3).max(200),
-  search_url_template: z.string().min(3).max(500).refine(
-    (s) => s.includes('{q}'),
-    { message: 'search_url_template precisa conter {q}' },
+  site: z.string().min(3).max(200).refine(
+    (s) => isValidSiteOrUrl(s),
+    { message: 'site precisa ser um domínio ou URL válido (ex: amazon.com.br)' },
+  ),
+  // Template é opcional. Quando preenchido, precisa ser URL http(s) válida.
+  // Placeholders aceitos: {q}, {query}, {produto}. Sem placeholder a UI avisa
+  // que a busca pode não funcionar corretamente. Sem template usamos fallback.
+  search_url_template: z.string().max(500).default('').refine(
+    (s) => s === '' || isValidSearchUrlTemplate(s),
+    { message: 'search_url_template precisa ser URL http(s) válida' },
   ),
   country: z.string().min(2).max(80).default('Brasil'),
   currency: z.enum(['BRL', 'USD', 'EUR', 'CNY']).default('BRL'),
