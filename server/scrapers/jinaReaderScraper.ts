@@ -52,6 +52,7 @@ export interface ScrapedResult {
 
 export interface ScrapeOptions {
   timeoutMs: number;
+  maxCandidates?: number;
 }
 
 /**
@@ -296,7 +297,7 @@ export async function extractViaJina(
 
   if (Date.now() > deadline) throw new TimeoutError(`Tempo esgotado para ${supplier.name}`);
 
-  return processSearchContent(supplier, query, searchUrl, searchContent, deadline, 'jina');
+  return processSearchContent(supplier, query, searchUrl, searchContent, deadline, 'jina', opts.maxCandidates);
 }
 
 /**
@@ -314,9 +315,10 @@ export async function processSearchContent(
   searchContent: string,
   deadline: number,
   sourceTag: string,
+  maxCandidates = 3,
 ): Promise<ScrapedResult> {
   // ─── Fase 1: Extrair candidatos com URL de produto ───────────
-  const candidates = extractCandidates(supplier, query, searchContent, searchUrl, 3);
+  const candidates = extractCandidates(supplier, query, searchContent, searchUrl, maxCandidates);
 
   if (candidates.length > 0) {
     // ─── Fase 2: Validar cada candidato na página de produto ─────

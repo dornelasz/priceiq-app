@@ -57,6 +57,9 @@ const envSchema = z.object({
     .transform((v) => v === 'true' || v === '1' || v === 'yes'),
   PLAYWRIGHT_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
   MAX_PLAYWRIGHT_PAGES_PER_SEARCH: z.coerce.number().int().min(1).max(5).default(1),
+  // ─── Candidatos por fornecedor (Fase 1 → Fase 2) ─────────────
+  // Quantas URLs de produto extrair da página de busca para validar na Fase 2.
+  MAX_CANDIDATES_PER_SUPPLIER: z.coerce.number().int().min(1).max(10).default(3),
 });
 
 const parsed = envSchema.safeParse(process.env);

@@ -205,7 +205,7 @@ export async function scrapeViaPlaywright(
     const combined = `${text}\n\n${html}`;
 
     // Entrega ao mesmo pipeline anti produto fantasma (Phase 1 + Phase 2 + fallback)
-    return await processSearchContent(supplier, query, searchUrl, combined, deadline, 'playwright');
+    return await processSearchContent(supplier, query, searchUrl, combined, deadline, 'playwright', opts.maxCandidates);
   } catch (e) {
     const msg = (e as Error).message ?? '';
     const isTimeout = /timeout|timed out|navigation timeout/i.test(msg);

@@ -3,11 +3,12 @@
  *
  * Fluxo por fornecedor:
  *   1. Se !forceRefresh → consulta cache (supplier_id + normalized_query)
- *      • cache hit → grava como from_cache=true e segue
+ *      • cache hit válido (validated + price + productName + evidenceText + URL)
+ *        → grava como from_cache=true e segue
  *   2. Cache miss / forceRefresh → scrapeWithFallback (específico → Jina → Playwright)
  *   3. Se o scraper achou: converte para BRL, grava em search_results
  *   4. Se NÃO achou: grava como erro/warning (NUNCA inventa preço)
- *   5. Cache do resultado (se preço válido) para próxima busca da mesma query
+ *   5. Cache do resultado (só se isCacheValid — nunca cacheamos erros)
  *
  * Concorrência controlada pelo SEARCH_CONCURRENCY.
  * Falha isolada: se um fornecedor estourar exception, os outros continuam.
@@ -72,6 +73,31 @@ interface CachedResult extends ScrapedResult {
   cachedAt: string;
 }
 
+/**
+ * Verifica se um resultado (do cache ou do scraper) é válido para ser
+ * reutilizado/armazenado. Nunca cacheamos erros, timeouts ou resultados
+ * sem evidência textual.
+ *
+ * Critérios obrigatórios:
+ *  - found=true
+ *  - status='validated'
+ *  - price > 0
+ *  - productName presente
+ *  - evidenceText presente (anti produto-fantasma)
+ *  - link ou sourceUrl presente (rastreabilidade)
+ */
+export function isCacheValid(cached: ScrapedResult): boolean {
+  return (
+    cached.found === true &&
+    cached.status === 'validated' &&
+    typeof cached.price === 'number' &&
+    cached.price > 0 &&
+    !!cached.productName &&
+    !!cached.evidenceText &&
+    !!(cached.link || cached.sourceUrl)
+  );
+}
+
 export async function runSearchWorker(input: WorkerInput): Promise<void> {
   const { searchId, query, suppliers, forceRefresh } = input;
   const normalizedQuery = matchingService.cacheKey(query);
@@ -83,18 +109,20 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
 
   await searchService.markRunning(searchId).catch(() => {});
 
-  // NOTA: quota Gemini esgotada NÃO bloqueia outros fornecedores.
-  // O motor principal é extração direta (sem IA). Gemini é só fallback opcional.
-
   await withConcurrency(suppliers, config.SEARCH_CONCURRENCY, async (sup) => {
-    // ─── 1. Tenta cache (apenas resultados válidos com preço; nunca erros) ──
+    const t0 = Date.now();
+
+    // ─── 1. Tenta cache (apenas resultados validated com evidência; nunca erros) ──
     let scraped: ScrapedResult | null = null;
     let fromCache = false;
+    let scraperStrategy = 'none';
+
     if (config.ENABLE_SEARCH_CACHE && !forceRefresh) {
       const cached = await cacheService.getSupplierResult<CachedResult>(sup.id, normalizedQuery);
-      if (cached && cached.found && typeof cached.price === 'number' && cached.price > 0 && cached.productName) {
+      if (cached && isCacheValid(cached)) {
         scraped = cached;
         fromCache = true;
+        scraperStrategy = 'cache';
       }
     }
 
@@ -103,11 +131,15 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
     if (!scraped) {
       try {
         const attempt = await applyTimeout(
-          scrapeWithFallback(sup, query, { timeoutMs: config.SUPPLIER_TIMEOUT_MS }),
+          scrapeWithFallback(sup, query, {
+            timeoutMs: config.SUPPLIER_TIMEOUT_MS,
+            maxCandidates: config.MAX_CANDIDATES_PER_SUPPLIER,
+          }),
           config.SUPPLIER_TIMEOUT_MS + 2000,
           sup.name,
         );
         scraped = attempt.result;
+        scraperStrategy = attempt.strategy;
       } catch (e) {
         const msg = (e as Error).message ?? '';
         const isTimeout = /tempo esgotado|timed out|abort/i.test(msg);
@@ -116,6 +148,7 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
           ? `Timeout no fornecedor ${sup.name}`
           : msg || 'Falha desconhecida no fornecedor';
         scraped = { found: false, status: externalStatus, errorMessage: friendly };
+        scraperStrategy = externalStatus;
       }
     }
 
@@ -128,6 +161,12 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
       scraperStatus: scraped.status,
     });
 
+    const elapsed = Date.now() - t0;
+    const errSummary = scraped.errorMessage ? ` | ${scraped.errorMessage.slice(0, 80)}` : '';
+    console.log(
+      `[worker] ${sup.name} | strategy: ${scraperStrategy} | status: ${finalStatus} | elapsed: ${elapsed}ms${errSummary}`,
+    );
+
     try {
       if (scraped.found && typeof scraped.price === 'number' && scraped.price > 0 && scraped.currency) {
         const { brl, rate } = await searchService.convertToBrl(scraped.price, scraped.currency);
@@ -135,7 +174,7 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
         const totalPrice = parseFloat((scraped.price + freight).toFixed(4));
         const totalBrl = rate > 0
           ? parseFloat((totalPrice * rate).toFixed(4))
-          : brl + freight; // fallback: BRL sem rate
+          : brl + freight;
 
         await searchService.insertResult(searchId, sup, {
           found: true,
@@ -154,7 +193,6 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
           available: scraped.available,
           warning: scraped.warning,
           fromCache,
-          // Etapa 5.1 — campos de validação
           linkType: scraped.linkType,
           linkValidated: scraped.linkValidated ?? false,
           evidenceText: scraped.evidenceText,
@@ -163,8 +201,8 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
           validationWarning: scraped.validationWarning,
         });
 
-        // Salva no cache (só se foi busca fresh — não recache cache)
-        if (!fromCache) {
+        // Salva no cache APENAS se resultado passou em todos os critérios de qualidade
+        if (!fromCache && isCacheValid(scraped)) {
           const toCache: CachedResult = { ...scraped, cachedAt: new Date().toISOString() };
           void cacheService.setSupplierResult(sup.id, normalizedQuery, toCache)
             .catch((e) => console.warn('[worker] cache set falhou', e));
