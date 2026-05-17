@@ -22,6 +22,7 @@ import { searchService } from '../services/searchService.js';
 import type { Supplier } from '../services/supplierService.js';
 import { cacheService } from '../services/cacheService.js';
 import { matchingService } from '../services/matchingService.js';
+import { deriveWorkerStatus, type ResultStatus } from '../lib/resultStatus.js';
 import { scrapeWithFallback, type ScrapedResult } from '../scrapers/index.js';
 
 export interface WorkerInput {
@@ -98,6 +99,7 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
     }
 
     // ─── 2. Cache miss → motor universal com fallback automático ──
+    let externalStatus: ResultStatus | null = null; // 'timeout' | 'error' (interceptado fora do scraper)
     if (!scraped) {
       try {
         const attempt = await applyTimeout(
@@ -108,16 +110,24 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
         scraped = attempt.result;
       } catch (e) {
         const msg = (e as Error).message ?? '';
-        const friendly = /tempo esgotado|timed out|abort/i.test(msg)
+        const isTimeout = /tempo esgotado|timed out|abort/i.test(msg);
+        externalStatus = isTimeout ? 'timeout' : 'error';
+        const friendly = isTimeout
           ? `Timeout no fornecedor ${sup.name}`
           : msg || 'Falha desconhecida no fornecedor';
-        scraped = { found: false, errorMessage: friendly };
+        scraped = { found: false, status: externalStatus, errorMessage: friendly };
       }
     }
 
-    // Gemini sem quota é warning interno; NÃO bloqueia outros fornecedores.
+    // ─── 3. Persiste resultado com status derivado ───────────
+    const finalStatus: ResultStatus = externalStatus ?? deriveWorkerStatus({
+      fromCache,
+      found: scraped.found,
+      hasPrice: typeof scraped.price === 'number' && scraped.price > 0,
+      hasCurrency: !!scraped.currency,
+      scraperStatus: scraped.status,
+    });
 
-    // ─── 3. Persiste resultado ─────────────────────────
     try {
       if (scraped.found && typeof scraped.price === 'number' && scraped.price > 0 && scraped.currency) {
         const { brl, rate } = await searchService.convertToBrl(scraped.price, scraped.currency);
@@ -129,6 +139,7 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
 
         await searchService.insertResult(searchId, sup, {
           found: true,
+          status: finalStatus,
           productName: scraped.productName,
           sellerName: scraped.sellerName,
           price: scraped.price,
@@ -162,6 +173,7 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
         // ─── REGRA-OURO: jamais inventar preço ──────────
         await searchService.insertResult(searchId, sup, {
           found: false,
+          status: finalStatus,
           errorMessage: scraped.errorMessage ?? 'preço não encontrado com segurança',
           fromCache: false,
         });

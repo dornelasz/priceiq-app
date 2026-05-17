@@ -72,7 +72,9 @@ CREATE TABLE IF NOT EXISTS search_results (
   evidence_text       TEXT,                 -- trecho onde o preço foi extraído
   source_url          TEXT,                 -- URL que foi raspada
   source_name         TEXT,                 -- 'jina-direct' | 'gemini-interpreter' | scraper específico
-  validation_warning  TEXT
+  validation_warning  TEXT,
+  -- Contrato único de status (Etapa 2)
+  status              TEXT                  -- validated|cached|not_found|blocked|invalid_link|price_not_found|product_mismatch|timeout|error
 );
 
 CREATE INDEX IF NOT EXISTS idx_results_search       ON search_results(search_id);
@@ -80,6 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_results_supplier     ON search_results(supplier_i
 CREATE INDEX IF NOT EXISTS idx_results_total_brl    ON search_results(total_brl);
 CREATE INDEX IF NOT EXISTS idx_results_link_type    ON search_results(link_type);
 CREATE INDEX IF NOT EXISTS idx_results_link_valid   ON search_results(link_validated);
+CREATE INDEX IF NOT EXISTS idx_results_status       ON search_results(status);
 
 -- ─── 4. EXCHANGE_RATES ────────────────────────────────────
 -- Histórico de cotações (sempre relativas a BRL)

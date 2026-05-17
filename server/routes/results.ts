@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { searchService } from '../services/searchService.js';
 import { rankingService } from '../services/rankingService.js';
+import { isSuccessStatus } from '../lib/resultStatus.js';
 import { idParamSchema } from '../lib/validators.js';
 
 export async function resultsRoutes(fastify: FastifyInstance): Promise<void> {
@@ -12,7 +13,7 @@ export async function resultsRoutes(fastify: FastifyInstance): Promise<void> {
    *   search: { id, query, status, created_at, completed_at, ... },
    *   progress: { total, completed, failed, running },
    *   results: [ { ... } ],   // só os encontrados, ordenados por melhor valor
-   *   errors: [ { supplier_name, error_message } ],
+   *   errors: [ { supplier_name, status, error_message } ],
    *   best: { supplier_name, total_brl, product_url, ... } | null
    * }
    */
@@ -23,8 +24,8 @@ export async function resultsRoutes(fastify: FastifyInstance): Promise<void> {
       searchService.getResults(id),
     ]);
 
-    const valid = all.filter((r) => !r.error_message && r.total_brl !== null);
-    const failed = all.filter((r) => r.error_message);
+    const valid = all.filter((r) => isSuccessStatus(r.status) && r.total_brl !== null);
+    const failed = all.filter((r) => !isSuccessStatus(r.status));
     const ordered = rankingService.sortByBestValue(valid);
     const best = ordered[0] ?? null;
 
@@ -45,6 +46,7 @@ export async function resultsRoutes(fastify: FastifyInstance): Promise<void> {
       errors: failed.map((r) => ({
         supplier_id: r.supplier_id,
         supplier_name: r.supplier_name,
+        status: r.status,
         error_message: r.error_message,
       })),
       best,

@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Alert, Eye, Link as LinkIcon, Search as SearchIcon } from './Icons';
 import { fmt, fmt4, fmtDate } from '@/lib/format';
+import { statusLabel } from '@/lib/resultStatus';
 import type { SearchResult, Supplier } from '@/lib/types';
 
 interface Props {
@@ -33,40 +34,42 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
     r.link_type ?? (isProductUrl(r.product_url) ? 'product' : 'search');
   const isValidatedProduct = linkType === 'product' && r.link_validated;
   const isSearchOnly = linkType === 'search';
+  const isCached = r.status === 'cached';
+  const isError = r.status !== 'validated' && r.status !== 'cached';
 
   const cls = `res-card${isBest ? ' best' : ''}`;
 
   return (
     <div className={cls}>
       <div className="res-body">
-        {/* Badges — objetivos, sem confidence */}
+        {/* Badges — objetivos, baseados no status */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 8 }}>
-          {isBest && (
+          {isBest && !isError && (
             <span className="tag" style={{ background: 'rgba(0,212,255,.12)', color: '#00D4FF', border: '1px solid rgba(0,212,255,.3)' }}>
               💰 Menor preço
             </span>
           )}
-          {isValidatedProduct && (
+          {isValidatedProduct && !isError && (
             <span className="tag" style={{ background: 'rgba(0,229,160,.1)', color: '#00E5A0', border: '1px solid rgba(0,229,160,.3)' }}>
               <LinkIcon size={13} /> Link validado
             </span>
           )}
-          {r.from_cache && (
+          {isCached && (
             <span className="tag" style={{ background: 'rgba(74,85,104,.15)', color: '#8896AA', border: '1px solid rgba(74,85,104,.3)' }}>
               📦 Cache
             </span>
           )}
-          {r.available === false && (
+          {r.available === false && !isError && (
             <span className="tag" style={{ background: 'rgba(255,77,109,.1)', color: '#FF4D6D', border: '1px solid rgba(255,77,109,.3)' }}>
               Indisponível
             </span>
           )}
-          {r.error_message && (
+          {isError && (
             <span className="tag" style={{ background: 'rgba(255,77,109,.1)', color: '#FF4D6D', border: '1px solid rgba(255,77,109,.3)' }}>
-              <Alert size={13} /> Erro
+              <Alert size={13} /> {statusLabel(r.status)}
             </span>
           )}
-          {priceDiffPct !== null && priceDiffPct !== undefined && priceDiffPct > 0 && (
+          {!isError && priceDiffPct !== null && priceDiffPct !== undefined && priceDiffPct > 0 && (
             <span className="tag" style={{ background: 'rgba(74,85,104,.15)', color: '#8896AA', border: '1px solid rgba(74,85,104,.3)' }}>
               +{priceDiffPct.toFixed(1)}% mais caro
             </span>

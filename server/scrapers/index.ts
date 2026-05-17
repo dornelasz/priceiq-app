@@ -108,6 +108,7 @@ export async function scrapeWithFallback(
     strategy: 'jina',
     result: {
       found: false,
+      status: 'error',
       errorMessage: 'nenhuma estratégia de scraper disponível',
       sourceName: 'no-strategy',
     },

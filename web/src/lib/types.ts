@@ -49,6 +49,17 @@ export interface Search {
 
 export type LinkType = 'product' | 'search' | 'unverified';
 
+export type ResultStatus =
+  | 'validated'
+  | 'cached'
+  | 'not_found'
+  | 'blocked'
+  | 'invalid_link'
+  | 'price_not_found'
+  | 'product_mismatch'
+  | 'timeout'
+  | 'error';
+
 export interface SearchResult {
   id: string;
   search_id: string;
@@ -77,6 +88,8 @@ export interface SearchResult {
   source_url: string | null;
   source_name: string | null;
   validation_warning: string | null;
+  // Etapa 2 — contrato único de status por resultado
+  status: ResultStatus;
 }
 
 export interface RatesPayload {
@@ -107,6 +120,7 @@ export interface SearchProgress {
 export interface SearchErrorEntry {
   supplier_id: string;
   supplier_name: string;
+  status: ResultStatus;
   error_message: string | null;
 }
 

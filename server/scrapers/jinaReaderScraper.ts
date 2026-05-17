@@ -21,10 +21,12 @@ import { TimeoutError } from '../lib/errors.js';
 import type { Supplier } from '../services/supplierService.js';
 import { matchingService } from '../services/matchingService.js';
 import { validateProductUrl } from '../services/urlValidator.js';
+import type { ResultStatus } from '../lib/resultStatus.js';
 import { extractDirectly, type DirectExtractResult } from './directExtractor.js';
 
 export interface ScrapedResult {
   found: boolean;
+  status?: ResultStatus;
   productName?: string;
   price?: number;
   currency?: string;
@@ -139,12 +141,24 @@ async function processContent(
 ): Promise<ScrapedResult> {
   const result = extractDirectly(supplier, query, content, searchUrl);
 
-  if (!result.found || !result.price || result.price <= 0 || !result.productName) {
+  if (!result.found || !result.productName) {
     return {
       found: false,
-      errorMessage: result.errorMessage ?? 'Preço não encontrado com segurança',
+      status: 'not_found',
+      errorMessage: result.errorMessage ?? 'Nenhum produto compatível encontrado',
       sourceUrl: searchUrl,
       sourceName: result.sourceName ?? sourceTag,
+    };
+  }
+
+  if (!result.price || result.price <= 0) {
+    return {
+      found: false,
+      status: 'price_not_found',
+      errorMessage: 'Produto encontrado mas o preço não foi confirmado no conteúdo',
+      sourceUrl: searchUrl,
+      sourceName: result.sourceName ?? sourceTag,
+      evidenceText: result.evidenceText,
     };
   }
 
@@ -152,6 +166,7 @@ async function processContent(
   if (result.matchScore !== undefined && result.matchScore < config.MIN_MATCH_SCORE) {
     return {
       found: false,
+      status: 'product_mismatch',
       errorMessage: `Produto encontrado parece ser acessório ou item diferente (match ${result.matchScore}%)`,
       sourceUrl: searchUrl,
       sourceName: result.sourceName ?? sourceTag,
@@ -162,6 +177,7 @@ async function processContent(
   if (!result.evidenceText || result.evidenceText.trim().length < 8) {
     return {
       found: false,
+      status: 'price_not_found',
       errorMessage: 'Preço encontrado sem evidência textual — rejeitado para evitar produto fantasma',
       sourceUrl: searchUrl,
       sourceName: result.sourceName ?? sourceTag,
@@ -173,6 +189,7 @@ async function processContent(
   if (!linkValidation.link) {
     return {
       found: false,
+      status: 'invalid_link',
       errorMessage: 'Link de produto não validado — rejeitado para evitar produto fantasma',
       sourceUrl: searchUrl,
       sourceName: result.sourceName ?? sourceTag,
@@ -196,6 +213,7 @@ async function processContent(
 
   return {
     found: true,
+    status: 'validated',
     productName: result.productName,
     price: result.price,
     currency: result.currency,
@@ -259,6 +277,7 @@ export async function extractViaJina(
     if (err.jinaBlocked) {
       return {
         found: false,
+        status: 'blocked',
         errorMessage: 'Fornecedor bloqueou leitura',
         sourceUrl: searchUrl,
         sourceName: 'jina-blocked',
@@ -267,6 +286,7 @@ export async function extractViaJina(
     if (directBlocked) {
       return {
         found: false,
+        status: 'blocked',
         errorMessage: 'Fornecedor bloqueou leitura',
         sourceUrl: searchUrl,
         sourceName: 'fetch-blocked',
@@ -274,6 +294,7 @@ export async function extractViaJina(
     }
     return {
       found: false,
+      status: 'error',
       errorMessage: `Página não retornou conteúdo suficiente (${err.message || directErr || 'erro de rede'})`,
       sourceUrl: searchUrl,
       sourceName: 'fetch-error',
@@ -283,6 +304,7 @@ export async function extractViaJina(
   if (!jinaContent || jinaContent.length < 200) {
     return {
       found: false,
+      status: 'not_found',
       errorMessage: 'Página não retornou conteúdo suficiente',
       sourceUrl: searchUrl,
       sourceName: 'jina-empty',

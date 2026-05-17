@@ -8,6 +8,7 @@ import ResultCard from '@/components/ResultCard';
 import { Refresh } from '@/components/Icons';
 import { showToast } from '@/components/Toast';
 import { searchesApi, suppliersApi } from '@/lib/api';
+import { statusLabel } from '@/lib/resultStatus';
 import type { SearchResultsResponse, Supplier } from '@/lib/types';
 
 const POLL_INTERVAL_MS = 2_500;
@@ -143,56 +144,26 @@ export default function ResultsPage() {
         </div>
       )}
 
-      {errors.length > 0 && (() => {
-        // Categoriza: Gemini-só é DISCRETO; outros são ressaltados.
-        const isGeminiOnly = (msg: string | null) =>
-          !!msg && /gemini|quota|429|resource[_ ]exhausted|interpreta(ção)? por ia/i.test(msg);
-        const otherErrors = errors.filter((e) => !isGeminiOnly(e.error_message));
-        const geminiErrors = errors.filter((e) => isGeminiOnly(e.error_message));
-        const hasResults = results.length > 0;
-
-        return (
-          <>
-            {otherErrors.length > 0 && (
-              <div style={{
-                marginBottom: 14,
-                background: 'rgba(255,77,109,.08)',
-                border: '1px solid rgba(255,77,109,.25)',
-                borderRadius: 12,
-                padding: 12,
-              }}>
-                <p style={{ color: '#FF4D6D', fontWeight: 800, fontSize: 13, marginBottom: 8 }}>
-                  {hasResults ? 'Alguns fornecedores não retornaram dados confiáveis' : 'Erros nos fornecedores'}
-                </p>
-                {otherErrors.slice(0, 5).map((e) => (
-                  <p key={e.supplier_id} style={{ color: '#FFB8C6', fontSize: 12, marginBottom: 5 }}>
-                    <strong>{e.supplier_name}:</strong> {(e.error_message ?? '').slice(0, 180)}
-                  </p>
-                ))}
-              </div>
-            )}
-            {/* Gemini quota: observação DISCRETA, não alerta principal */}
-            {geminiErrors.length > 0 && hasResults && (
-              <p style={{ color: '#8896AA', fontSize: 11, marginBottom: 14, fontStyle: 'italic' }}>
-                ℹ️ Interpretação por IA indisponível em {geminiErrors.length} fornecedor{geminiErrors.length !== 1 ? 'es' : ''}; resultados vieram da extração direta.
-              </p>
-            )}
-            {geminiErrors.length > 0 && !hasResults && otherErrors.length === 0 && (
-              <div style={{
-                marginBottom: 14,
-                background: 'rgba(74,85,104,.15)',
-                border: '1px solid rgba(74,85,104,.3)',
-                borderRadius: 12,
-                padding: 12,
-              }}>
-                <p style={{ color: '#8896AA', fontSize: 12 }}>
-                  Interpretação por IA indisponível e extração direta não encontrou preço seguro nos fornecedores. Tente forçar atualização ou ajuste os fornecedores.
-                </p>
-              </div>
-            )}
-          </>
-        );
-      })()}
+      {errors.length > 0 && (
+        <div style={{
+          marginBottom: 14,
+          background: 'rgba(255,77,109,.08)',
+          border: '1px solid rgba(255,77,109,.25)',
+          borderRadius: 12,
+          padding: 12,
+        }}>
+          <p style={{ color: '#FF4D6D', fontWeight: 800, fontSize: 13, marginBottom: 8 }}>
+            {results.length > 0
+              ? 'Alguns fornecedores não retornaram resultado válido'
+              : 'Nenhum fornecedor retornou resultado válido'}
+          </p>
+          {errors.slice(0, 8).map((e) => (
+            <p key={e.supplier_id} style={{ color: '#FFB8C6', fontSize: 12, marginBottom: 5 }}>
+              <strong>{e.supplier_name}:</strong> {statusLabel(e.status)}
+            </p>
+          ))}
+        </div>
+      )}
 
       {!inProgress && results.length === 0 && errors.length === 0 && (
         <div style={{

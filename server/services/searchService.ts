@@ -21,6 +21,7 @@
  */
 import { query, withTransaction } from '../db/client.js';
 import { NotFoundError } from '../lib/errors.js';
+import type { ResultStatus } from '../lib/resultStatus.js';
 import { supplierService, type Supplier } from './supplierService.js';
 import { currencyService } from './currencyService.js';
 
@@ -65,6 +66,8 @@ export interface SearchResult {
   source_url: string | null;
   source_name: string | null;
   validation_warning: string | null;
+  // Etapa 2 — contrato único de status
+  status: ResultStatus;
 }
 
 interface SearchRow {
@@ -105,12 +108,39 @@ interface SearchResultRow {
   source_url: string | null;
   source_name: string | null;
   validation_warning: string | null;
+  status: string | null;
 }
 
 function parseNum(v: string | null): number | null {
   if (v === null || v === undefined) return null;
   const n = parseFloat(v);
   return Number.isFinite(n) ? n : null;
+}
+
+const VALID_STATUSES: ReadonlyArray<ResultStatus> = [
+  'validated', 'cached', 'not_found', 'blocked', 'invalid_link',
+  'price_not_found', 'product_mismatch', 'timeout', 'error',
+];
+
+/**
+ * Fallback para linhas legadas sem coluna status: deriva a partir dos
+ * campos existentes (error_message, total_brl, from_cache, link_validated).
+ */
+function normalizeStatus(row: SearchResultRow): ResultStatus {
+  if (row.status && (VALID_STATUSES as readonly string[]).includes(row.status)) {
+    return row.status as ResultStatus;
+  }
+  if (!row.error_message && row.total_brl !== null) {
+    return row.from_cache ? 'cached' : 'validated';
+  }
+  const msg = (row.error_message ?? '').toLowerCase();
+  if (/bloqueou|http 403|http 429|http 451|captcha|cloudflare/.test(msg)) return 'blocked';
+  if (/timeout|tempo esgotado/.test(msg)) return 'timeout';
+  if (/link/.test(msg) && /n[ãa]o validado|inv[áa]lido/.test(msg)) return 'invalid_link';
+  if (/match|acess[óo]rio|item diferente/.test(msg)) return 'product_mismatch';
+  if (/pre[çc]o.*(n[ãa]o|sem)/.test(msg)) return 'price_not_found';
+  if (/conte[úu]do.*suficiente|p[áa]gina|n[ãa]o encontrado/.test(msg)) return 'not_found';
+  return 'error';
 }
 
 function searchToApi(row: SearchRow): Search {
@@ -154,11 +184,13 @@ function resultToApi(row: SearchResultRow): SearchResult {
     source_url: row.source_url,
     source_name: row.source_name,
     validation_warning: row.validation_warning,
+    status: normalizeStatus(row),
   };
 }
 
 export interface InsertResultPayload {
   found: boolean;
+  status: ResultStatus;
   productName?: string;
   sellerName?: string;
   price?: number;
@@ -316,9 +348,10 @@ export const searchService = {
        (search_id, supplier_id, product_name, seller_name, price, freight,
         total_price, currency, exchange_rate_used, total_brl, product_url,
         match_score, confidence, available, warning, error_message, from_cache,
-        link_type, link_validated, evidence_text, source_url, source_name, validation_warning)
+        link_type, link_validated, evidence_text, source_url, source_name, validation_warning,
+        status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-               $18,$19,$20,$21,$22,$23)`,
+               $18,$19,$20,$21,$22,$23,$24)`,
       [
         searchId,
         sup.id,
@@ -343,6 +376,7 @@ export const searchService = {
         payload.sourceUrl ?? null,
         payload.sourceName ?? null,
         payload.validationWarning ?? null,
+        payload.status,
       ],
     );
   },
