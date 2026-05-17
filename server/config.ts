@@ -42,6 +42,21 @@ const envSchema = z.object({
     .string()
     .default('true')
     .transform((v) => v === 'true' || v === '1' || v === 'yes'),
+
+  // ─── Playwright (último fallback, opcional) ──────────────
+  // Desligado por padrão. Para usar:
+  //   cd server && npm install playwright && npx playwright install chromium
+  //   PLAYWRIGHT_ENABLED=true
+  PLAYWRIGHT_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
+  PLAYWRIGHT_HEADLESS: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
+  PLAYWRIGHT_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
+  MAX_PLAYWRIGHT_PAGES_PER_SEARCH: z.coerce.number().int().min(1).max(5).default(1),
 });
 
 const parsed = envSchema.safeParse(process.env);

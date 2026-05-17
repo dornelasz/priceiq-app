@@ -296,35 +296,51 @@ export async function extractViaJina(
 
   if (Date.now() > deadline) throw new TimeoutError(`Tempo esgotado para ${supplier.name}`);
 
-  // ─── Fase 1c: Extrair candidatos com URL de produto ───────────
+  return processSearchContent(supplier, query, searchUrl, searchContent, deadline, 'jina');
+}
+
+/**
+ * Helper compartilhado: dado conteúdo de uma página de busca (de qualquer fonte
+ * — fetch direto, Jina ou Playwright), executa Fase 1 (candidatos) + Fase 2
+ * (validação na página de produto) + fallback (extração direta).
+ *
+ * Reutilizado por extractViaJina e scrapeViaPlaywright para garantir o mesmo
+ * contrato anti produto fantasma independente de como o HTML foi obtido.
+ */
+export async function processSearchContent(
+  supplier: Supplier,
+  query: string,
+  searchUrl: string,
+  searchContent: string,
+  deadline: number,
+  sourceTag: string,
+): Promise<ScrapedResult> {
+  // ─── Fase 1: Extrair candidatos com URL de produto ───────────
   const candidates = extractCandidates(supplier, query, searchContent, searchUrl, 3);
 
   if (candidates.length > 0) {
     // ─── Fase 2: Validar cada candidato na página de produto ─────
-    // Tenta os candidatos em ordem de relevância (matchScore desc).
     // Para no primeiro resultado 'validated'. Não usa preço da página de busca.
     const phase2Results: ScrapedResult[] = [];
     for (const candidate of candidates) {
       const remaining = deadline - Date.now();
-      if (remaining < 5_000) break; // não há tempo suficiente para nova tentativa
+      if (remaining < 5_000) break;
       try {
         const r = await extractProductPage(
           supplier, query, candidate.url, searchUrl,
           { timeoutMs: Math.min(remaining - 2_000, 18_000) },
         );
         phase2Results.push(r);
-        if (r.found && r.status === 'validated') return r; // primeiro validado vence
+        if (r.found && r.status === 'validated') return r;
       } catch {
         // candidato individual falhou — tenta o próximo
       }
     }
 
-    // Nenhum candidato validado — retorna o melhor resultado disponível
     const anyFound = phase2Results.find((r) => r.found);
     if (anyFound) return anyFound;
     if (phase2Results.length > 0) return phase2Results[phase2Results.length - 1]!;
 
-    // Todos os candidatos falharam sem resultado — sinaliza como não encontrado
     return {
       found: false,
       status: 'not_found',
@@ -334,10 +350,8 @@ export async function extractViaJina(
     };
   }
 
-  // ─── Fallback: extração direta da página de busca ────────────
-  // Ativado apenas quando nenhum candidato com URL de produto foi extraído.
-  // Reusa processContent original (JSON-LD / __NEXT_DATA__ / markdown).
-  return processContent(supplier, query, searchUrl, searchContent, deadline, 'jina');
+  // ─── Fallback: extração direta do conteúdo da página de busca ─
+  return processContent(supplier, query, searchUrl, searchContent, deadline, sourceTag);
 }
 
 /**

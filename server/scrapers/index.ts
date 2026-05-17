@@ -57,11 +57,15 @@ export interface ScrapeAttempt {
  */
 function shouldFallbackToPlaywright(result: ScrapedResult): boolean {
   if (!result || result.found) return false;
+  // Status 'blocked' do contrato Etapa 2 → SEMPRE tenta Playwright
+  if (result.status === 'blocked') return true;
+  // Outros sinais legados de bloqueio (mensagem ou sourceName)
   const msg = String(result.errorMessage ?? '').toLowerCase();
   if (msg.includes('bloqueou') || msg.includes('http 451') || msg.includes('http 429') || msg.includes('http 403')) return true;
   const src = result.sourceName ?? '';
-  if (src === 'jina-blocked' || src === 'jina-fetch-error' || src === 'jina-empty') return true;
-  if (src === 'fetch-blocked' || src === 'fetch-error') return true;
+  if (src.startsWith('jina-') || src.startsWith('fetch-') || src === 'blocked') {
+    if (/blocked|empty|error/.test(src)) return true;
+  }
   return false;
 }
 
