@@ -423,6 +423,70 @@ function extractFromMarkdown(
   return out;
 }
 
+export interface TopCandidate {
+  name: string;
+  url: string;
+  price?: number;
+  currency?: string;
+  matchScore: number;
+  evidenceText?: string;
+  freight?: number;
+  freightNote?: string | null;
+}
+
+/**
+ * Extrai os N melhores candidatos com URL de produto a partir do conteúdo de uma
+ * página de busca. Usado pela Fase 1 do fluxo de duas fases.
+ * Cada candidato tem URL absoluta para que a Fase 2 possa buscar a página do produto.
+ */
+export function extractTopCandidates(
+  supplier: Supplier,
+  query: string,
+  content: string,
+  sourceUrl: string,
+  maxCandidates = 3,
+): TopCandidate[] {
+  if (!content || content.length < 200) return [];
+
+  const expectedCurrency = (supplier.currency || 'BRL').toUpperCase();
+
+  const raw: Candidate[] = [
+    ...extractFromJsonLd(content, supplier, query, expectedCurrency),
+    ...extractFromNextData(content, supplier, query, expectedCurrency),
+    ...extractFromMarkdown(content, supplier, query, expectedCurrency),
+  ];
+
+  // Só candidatos com URL absoluta válida são úteis para a Fase 2
+  const withUrl = raw.filter((c) => c.url && c.url.startsWith('http'));
+
+  // Deduplica por URL (ignorando query string)
+  const seen = new Set<string>();
+  const deduped = withUrl.filter((c) => {
+    const key = (c.url.split('?')[0] ?? c.url).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  const sourceWeight: Record<Candidate['source'], number> = { 'json-ld': 0, 'next-data': 1, markdown: 2 };
+  deduped.sort((a, b) => {
+    if (b.matchScore !== a.matchScore) return b.matchScore - a.matchScore;
+    if (sourceWeight[a.source] !== sourceWeight[b.source]) return sourceWeight[a.source] - sourceWeight[b.source];
+    return a.price - b.price;
+  });
+
+  return deduped.slice(0, maxCandidates).map((c) => ({
+    name: c.name,
+    url: c.url,
+    price: c.price,
+    currency: c.currency,
+    matchScore: c.matchScore,
+    evidenceText: c.evidenceText,
+    freight: c.freight,
+    freightNote: c.freightNote,
+  }));
+}
+
 /**
  * Função principal — combina estratégias e devolve o melhor candidato.
  */

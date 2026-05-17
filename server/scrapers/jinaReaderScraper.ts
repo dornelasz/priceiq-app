@@ -23,6 +23,8 @@ import { matchingService } from '../services/matchingService.js';
 import { validateProductUrl } from '../services/urlValidator.js';
 import type { ResultStatus } from '../lib/resultStatus.js';
 import { extractDirectly, type DirectExtractResult } from './directExtractor.js';
+import { extractCandidates } from './productCandidateExtractor.js';
+import { extractProductPage } from './productPageExtractor.js';
 
 export interface ScrapedResult {
   found: boolean;
@@ -234,9 +236,18 @@ async function processContent(
 }
 
 /**
- * Cadeia Universal: tenta fetch direto (HTML cru) → Jina Reader → falha clara.
- * Em cada passo, faz extração via directExtractor (JSON-LD, __NEXT_DATA__, markdown).
- * Retorna o primeiro resultado VÁLIDO ou o erro padronizado mais informativo.
+ * Cadeia Universal com fluxo de duas fases:
+ *
+ *   Fase 1 — busca e candidatos:
+ *     Fetch direto → Jina Reader → extrair até 3 URLs de produto da página de busca.
+ *
+ *   Fase 2 — validação na página de produto (quando há candidatos):
+ *     Para cada candidato, abre a página de produto e extrai preço com evidência.
+ *     Retorna o primeiro resultado validado ou o melhor resultado disponível.
+ *     NÃO usa preço da página de busca como resultado final quando há candidatos.
+ *
+ *   Fallback — extração direta (quando nenhum candidato foi extraído):
+ *     Comportamento original: extrai preço do conteúdo da página de busca.
  */
 export async function extractViaJina(
   supplier: Supplier,
@@ -246,76 +257,85 @@ export async function extractViaJina(
 ): Promise<ScrapedResult> {
   const deadline = Date.now() + opts.timeoutMs;
 
-  // ─── 1. Fetch direto do HTML (rápido para sites SSR/HTML estáticos) ───
+  // ─── Fase 1a: Fetch direto do HTML ───────────────────────────
+  let searchContent: string | null = null;
   let directBlocked = false;
   let directErr: string | null = null;
   try {
     const remaining = Math.max(3_000, deadline - Date.now());
     const html = await fetchDirectHtml(searchUrl, Math.min(10_000, remaining));
-    if (html && html.length >= 200) {
-      const out = await processContent(supplier, query, searchUrl, html, deadline, 'fetch-direct');
-      if (out.found) return out;
-      // se não achou mas o HTML veio — pode ser que precise do Jina (markdown limpo). Continua.
-    }
+    if (html && html.length >= 200) searchContent = html;
   } catch (e) {
     const err = e as Error & { siteBlocked?: boolean };
     if (err.siteBlocked) directBlocked = true;
     directErr = err.message;
   }
 
-  if (Date.now() > deadline) {
-    throw new TimeoutError(`Tempo esgotado para ${supplier.name}`);
+  if (Date.now() > deadline) throw new TimeoutError(`Tempo esgotado para ${supplier.name}`);
+
+  // ─── Fase 1b: Jina Reader (se direto não retornou conteúdo) ──
+  if (!searchContent) {
+    try {
+      const remaining = Math.max(3_000, deadline - Date.now());
+      const jina = await fetchViaJina(searchUrl, Math.min(15_000, remaining));
+      if (jina && jina.length >= 200) searchContent = jina;
+    } catch (e) {
+      const err = e as Error & { jinaBlocked?: boolean };
+      if (err.jinaBlocked || directBlocked) {
+        return { found: false, status: 'blocked', errorMessage: 'Fornecedor bloqueou leitura', sourceUrl: searchUrl, sourceName: 'blocked' };
+      }
+      return { found: false, status: 'error', errorMessage: `Página não retornou conteúdo (${(err as Error).message || directErr || 'erro de rede'})`, sourceUrl: searchUrl, sourceName: 'fetch-error' };
+    }
   }
 
-  // ─── 2. Jina Reader (lida com JS-heavy / SPAs) ───
-  let jinaContent: string | null = null;
-  try {
-    const remaining = Math.max(3_000, deadline - Date.now());
-    jinaContent = await fetchViaJina(searchUrl, Math.min(15_000, remaining));
-  } catch (e) {
-    const err = e as Error & { jinaBlocked?: boolean };
-    if (err.jinaBlocked) {
-      return {
-        found: false,
-        status: 'blocked',
-        errorMessage: 'Fornecedor bloqueou leitura',
-        sourceUrl: searchUrl,
-        sourceName: 'jina-blocked',
-      };
-    }
-    if (directBlocked) {
-      return {
-        found: false,
-        status: 'blocked',
-        errorMessage: 'Fornecedor bloqueou leitura',
-        sourceUrl: searchUrl,
-        sourceName: 'fetch-blocked',
-      };
-    }
-    return {
-      found: false,
-      status: 'error',
-      errorMessage: `Página não retornou conteúdo suficiente (${err.message || directErr || 'erro de rede'})`,
-      sourceUrl: searchUrl,
-      sourceName: 'fetch-error',
-    };
+  if (!searchContent || searchContent.length < 200) {
+    return { found: false, status: 'not_found', errorMessage: 'Página não retornou conteúdo suficiente', sourceUrl: searchUrl, sourceName: 'search-empty' };
   }
 
-  if (!jinaContent || jinaContent.length < 200) {
+  if (Date.now() > deadline) throw new TimeoutError(`Tempo esgotado para ${supplier.name}`);
+
+  // ─── Fase 1c: Extrair candidatos com URL de produto ───────────
+  const candidates = extractCandidates(supplier, query, searchContent, searchUrl, 3);
+
+  if (candidates.length > 0) {
+    // ─── Fase 2: Validar cada candidato na página de produto ─────
+    // Tenta os candidatos em ordem de relevância (matchScore desc).
+    // Para no primeiro resultado 'validated'. Não usa preço da página de busca.
+    const phase2Results: ScrapedResult[] = [];
+    for (const candidate of candidates) {
+      const remaining = deadline - Date.now();
+      if (remaining < 5_000) break; // não há tempo suficiente para nova tentativa
+      try {
+        const r = await extractProductPage(
+          supplier, query, candidate.url, searchUrl,
+          { timeoutMs: Math.min(remaining - 2_000, 18_000) },
+        );
+        phase2Results.push(r);
+        if (r.found && r.status === 'validated') return r; // primeiro validado vence
+      } catch {
+        // candidato individual falhou — tenta o próximo
+      }
+    }
+
+    // Nenhum candidato validado — retorna o melhor resultado disponível
+    const anyFound = phase2Results.find((r) => r.found);
+    if (anyFound) return anyFound;
+    if (phase2Results.length > 0) return phase2Results[phase2Results.length - 1]!;
+
+    // Todos os candidatos falharam sem resultado — sinaliza como não encontrado
     return {
       found: false,
       status: 'not_found',
-      errorMessage: 'Página não retornou conteúdo suficiente',
+      errorMessage: 'Produto não confirmado em nenhuma página de produto dos candidatos',
       sourceUrl: searchUrl,
-      sourceName: 'jina-empty',
+      sourceName: 'phase2-all-failed',
     };
   }
 
-  if (Date.now() > deadline) {
-    throw new TimeoutError(`Tempo esgotado para ${supplier.name}`);
-  }
-
-  return processContent(supplier, query, searchUrl, jinaContent, deadline, 'jina');
+  // ─── Fallback: extração direta da página de busca ────────────
+  // Ativado apenas quando nenhum candidato com URL de produto foi extraído.
+  // Reusa processContent original (JSON-LD / __NEXT_DATA__ / markdown).
+  return processContent(supplier, query, searchUrl, searchContent, deadline, 'jina');
 }
 
 /**
