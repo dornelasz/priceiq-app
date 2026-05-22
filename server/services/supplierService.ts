@@ -306,4 +306,100 @@ export const supplierService = {
     const r = await query(`DELETE FROM suppliers WHERE id = $1`, [id]);
     if (r.rowCount === 0) throw new NotFoundError('Fornecedor');
   },
+
+  /**
+   * Atualiza apenas o status de certificação/setup do fornecedor.
+   * `setAutoConfiguredAt=true` registra NOW() em auto_configured_at.
+   * Não toca em nenhum campo legado nem em supplier_recipes.
+   */
+  async updateCertificationStatus(
+    supplierId: string,
+    status: SupplierCertificationStatus,
+    opts: { setAutoConfiguredAt?: boolean } = {},
+  ): Promise<void> {
+    const sql = opts.setAutoConfiguredAt
+      ? `UPDATE suppliers
+         SET certification_status = $1, setup_status = $1, auto_configured_at = NOW()
+         WHERE id = $2`
+      : `UPDATE suppliers
+         SET certification_status = $1, setup_status = $1
+         WHERE id = $2`;
+    const r = await query(sql, [status, supplierId]);
+    if (r.rowCount === 0) throw new NotFoundError('Fornecedor');
+  },
+
+  /**
+   * Insere ou atualiza a receita do fornecedor (1:1 via UNIQUE(supplier_id)).
+   * Função idempotente — pode ser chamada quantas vezes for necessário pelo
+   * AutoConfig sem criar receitas duplicadas.
+   */
+  async upsertRecipe(
+    supplierId: string,
+    recipe: Partial<SupplierRecipe> & {
+      supplierId: string;
+      status: SupplierCertificationStatus;
+    },
+  ): Promise<SupplierRecipe> {
+    if (recipe.supplierId !== supplierId) {
+      throw new Error('supplierId divergente entre argumento e recipe');
+    }
+    const r = await query<SupplierRecipeRow>(
+      `INSERT INTO supplier_recipes (
+         supplier_id, status, platform_detected, search_url_template,
+         product_url_patterns, extraction_strategy, title_selector,
+         price_selector, currency_selector, image_selector, availability_selector,
+         jsonld_enabled, json_paths, requires_js, requires_browser, confidence,
+         last_tested_at, last_success_at, last_error, config_json
+       )
+       VALUES (
+         $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11,
+         $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20::jsonb
+       )
+       ON CONFLICT (supplier_id) DO UPDATE SET
+         status = EXCLUDED.status,
+         platform_detected = EXCLUDED.platform_detected,
+         search_url_template = EXCLUDED.search_url_template,
+         product_url_patterns = EXCLUDED.product_url_patterns,
+         extraction_strategy = EXCLUDED.extraction_strategy,
+         title_selector = EXCLUDED.title_selector,
+         price_selector = EXCLUDED.price_selector,
+         currency_selector = EXCLUDED.currency_selector,
+         image_selector = EXCLUDED.image_selector,
+         availability_selector = EXCLUDED.availability_selector,
+         jsonld_enabled = EXCLUDED.jsonld_enabled,
+         json_paths = EXCLUDED.json_paths,
+         requires_js = EXCLUDED.requires_js,
+         requires_browser = EXCLUDED.requires_browser,
+         confidence = EXCLUDED.confidence,
+         last_tested_at = EXCLUDED.last_tested_at,
+         last_success_at = EXCLUDED.last_success_at,
+         last_error = EXCLUDED.last_error,
+         config_json = EXCLUDED.config_json
+       RETURNING *`,
+      [
+        supplierId,
+        recipe.status,
+        recipe.platformDetected ?? null,
+        recipe.searchUrlTemplate ?? null,
+        JSON.stringify(recipe.productUrlPatterns ?? []),
+        recipe.extractionStrategy ?? null,
+        recipe.titleSelector ?? null,
+        recipe.priceSelector ?? null,
+        recipe.currencySelector ?? null,
+        recipe.imageSelector ?? null,
+        recipe.availabilitySelector ?? null,
+        recipe.jsonLdEnabled ?? false,
+        recipe.jsonPaths ? JSON.stringify(recipe.jsonPaths) : null,
+        recipe.requiresJs ?? false,
+        recipe.requiresBrowser ?? false,
+        recipe.confidence ?? null,
+        recipe.lastTestedAt ?? null,
+        recipe.lastSuccessAt ?? null,
+        recipe.lastError ?? null,
+        recipe.configJson ? JSON.stringify(recipe.configJson) : null,
+      ],
+    );
+    if (!r.rows[0]) throw new Error('Falha ao persistir supplier_recipes');
+    return recipeRowToApi(r.rows[0]);
+  },
 };
