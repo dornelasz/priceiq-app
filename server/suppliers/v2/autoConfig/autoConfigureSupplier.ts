@@ -42,117 +42,24 @@ import {
 import { buildSupplierRecipe } from './recipeBuilder.js';
 import { certifyRecipeCandidate } from './supplierCertifier.js';
 
-// ─── Fetcher injetável ──────────────────────────────────────────────────
+// ─── Fetcher injetável (re-exportado da camada v2/fetching) ─────────────
+//
+// A definição do Fetcher migrou para v2/fetching/contentFetcher.ts na Fase D
+// para ser compartilhada com o Recipe Runner. Mantemos os re-exports aqui
+// para preservar a API pública usada pelos testes da Fase C.
 
-export type FetcherStatus =
-  | 'ok'
-  | 'blocked'
-  | 'requires_login'
-  | 'not_found'
-  | 'error';
+import {
+  createDefaultFetcher as createDefaultFetcherFromFetching,
+  DEFAULT_FETCH_TIMEOUT_MS,
+  type Fetcher,
+  type FetcherResult,
+  type FetcherStatus,
+} from '../fetching/contentFetcher.js';
 
-export interface FetcherResult {
-  status: FetcherStatus;
-  httpStatus?: number;
-  html?: string;
-  finalUrl?: string;
-  error?: string;
-}
+export type { Fetcher, FetcherResult, FetcherStatus };
+export const createDefaultFetcher = createDefaultFetcherFromFetching;
 
-export interface Fetcher {
-  fetchText(
-    url: string,
-    options?: { timeoutMs?: number },
-  ): Promise<FetcherResult>;
-}
-
-const DEFAULT_TIMEOUT_MS = 8000;
-const USER_AGENT =
-  'Mozilla/5.0 (compatible; PriceIQ-AutoConfig/1.0; +https://priceiq.app)';
-
-const CHALLENGE_RX =
-  /just a moment|attention required|cloudflare|verify you are human|please verify|captcha/i;
-const LOGIN_RX =
-  /please (?:sign|log) in|você precisa fazer login|entrar para ver pre[çc]os|sign in to see prices/i;
-
-export function createDefaultFetcher(): Fetcher {
-  return {
-    async fetchText(url, opts) {
-      const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-      try {
-        const res = await fetch(url, {
-          signal: ctrl.signal,
-          redirect: 'follow',
-          headers: {
-            'user-agent': USER_AGENT,
-            accept:
-              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'accept-language': 'pt-BR,pt;q=0.9,en;q=0.8',
-          },
-        });
-        const html = await res.text().catch(() => '');
-        clearTimeout(timer);
-
-        if (res.status === 401) {
-          return {
-            status: 'requires_login',
-            httpStatus: 401,
-            html,
-            finalUrl: res.url,
-          };
-        }
-        if (res.status === 403 || res.status === 429 || res.status === 451) {
-          return {
-            status: 'blocked',
-            httpStatus: res.status,
-            html,
-            finalUrl: res.url,
-          };
-        }
-        if (res.status === 404) {
-          return {
-            status: 'not_found',
-            httpStatus: 404,
-            html,
-            finalUrl: res.url,
-          };
-        }
-        if (!res.ok) {
-          return {
-            status: 'error',
-            httpStatus: res.status,
-            html,
-            finalUrl: res.url,
-            error: `HTTP ${res.status}`,
-          };
-        }
-        const peek = html.slice(0, 6000);
-        if (CHALLENGE_RX.test(peek)) {
-          return {
-            status: 'blocked',
-            httpStatus: res.status,
-            html,
-            finalUrl: res.url,
-          };
-        }
-        if (LOGIN_RX.test(peek)) {
-          return {
-            status: 'requires_login',
-            httpStatus: res.status,
-            html,
-            finalUrl: res.url,
-          };
-        }
-        return { status: 'ok', httpStatus: res.status, html, finalUrl: res.url };
-      } catch (e) {
-        clearTimeout(timer);
-        return { status: 'error', error: (e as Error).message };
-      }
-    },
-  };
-}
+const DEFAULT_TIMEOUT_MS = DEFAULT_FETCH_TIMEOUT_MS;
 
 // ─── Store injetável (interface mínima para teste) ─────────────────────
 
