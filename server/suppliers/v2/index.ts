@@ -87,3 +87,9 @@ export {
 } from './extractors/index.js';
 
 export { matchProduct, type MatchResult } from './matching/index.js';
+
+// NOTA: módulos que tocam em DB/I/O (autoConfig, integration) NÃO são
+// re-exportados aqui para manter este barrel seguro de importar sem
+// `DATABASE_URL` definido. Importe-os diretamente dos sub-paths:
+//   import { autoConfigureSupplier } from '.../suppliers/v2/autoConfig/index.js';
+//   import { mapUniversalResultToInsertPayload } from '.../suppliers/v2/integration/index.js';

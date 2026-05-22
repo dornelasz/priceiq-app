@@ -1,35 +1,86 @@
 /**
  * Worker in-process — orquestra a busca real para uma search criada.
  *
- * Fluxo por fornecedor:
- *   1. Se !forceRefresh → consulta cache (supplier_id + normalized_query)
- *      • cache hit → grava como from_cache=true e segue
- *   2. Cache miss / forceRefresh → scrapeWithFallback (específico → Jina → Playwright)
- *   3. Se o scraper achou: converte para BRL, grava em search_results
- *   4. Se NÃO achou: grava como erro/warning (NUNCA inventa preço)
- *   5. Cache do resultado (se preço válido) para próxima busca da mesma query
+ * Fluxo V2 por fornecedor (a partir da Fase E):
+ *   1. Cache: se cache hit válido (status='validated', tem produto+preço+
+ *      evidence+linkValidated), reaproveita como `cached`.
+ *   2. Carrega `supplier_recipes` via supplierService.getRecipe.
+ *   3. Se recipe.status='certified' → runSupplierRecipe(supplier, recipe, query).
+ *   4. Se recipe não certified → autoConfigureSupplier(supplier.id) UMA vez.
+ *      Se autoConfig retornar certified com recipe nova → runSupplierRecipe.
+ *      Caso contrário → grava status controlado (`needs_supplier_setup`
+ *      mapeado para 'error' com errorMessage explícito).
+ *   5. Persiste o UniversalSearchResult via mapUniversalResultToInsertPayload.
+ *   6. Cache: só armazena resultados que passam por isCacheValid (validated
+ *      com price+productName+evidence+link). Erros NUNCA entram no cache.
  *
- * Concorrência controlada pelo SEARCH_CONCURRENCY.
- * Falha isolada: se um fornecedor estourar exception, os outros continuam.
+ * Garantias mantidas da Fase D:
+ *   - Frete desconhecido NUNCA vira 0 (freight=null, totalPrice=null).
+ *   - Sem evidence → resultado nunca é gravado como validated.
+ *   - Link de busca/categoria nunca é gravado como product validado.
+ *   - Cotação continua vindo do searchService.convertToBrl (sem tocar em
+ *     currencyService nem em routes/rates).
+ *   - Falha isolada: exception em um fornecedor não derruba os outros.
  *
- * Ao final, chama finalizeStatus() que define:
- *   - completed     (todos OK)
- *   - partial_failed (alguns OK, alguns falharam)
- *   - failed        (nenhum OK)
+ * Concorrência: SEARCH_CONCURRENCY do config.
+ * Ao final: searchService.finalizeStatus → completed/partial_failed/failed.
  */
 import { config } from '../config.js';
 import { searchService } from '../services/searchService.js';
-import type { Supplier } from '../services/supplierService.js';
+import { supplierService, type Supplier } from '../services/supplierService.js';
 import { cacheService } from '../services/cacheService.js';
 import { matchingService } from '../services/matchingService.js';
-import { deriveWorkerStatus, type ResultStatus } from '../lib/resultStatus.js';
-import { scrapeWithFallback, type ScrapedResult } from '../scrapers/index.js';
+import type { ResultStatus } from '../lib/resultStatus.js';
+import { autoConfigureSupplier } from '../suppliers/v2/autoConfig/index.js';
+import { runSupplierRecipe } from '../suppliers/v2/recipeRunner/index.js';
+import { mapUniversalResultToInsertPayload } from '../suppliers/v2/integration/index.js';
+import type {
+  SupplierRecipe,
+  UniversalSearchResult,
+  Fetcher,
+} from '../suppliers/v2/index.js';
 
 export interface WorkerInput {
   searchId: string;
   query: string;
   suppliers: Supplier[];
   forceRefresh: boolean;
+  /** Injetáveis para teste. Em produção, defaults são usados. */
+  deps?: WorkerDeps;
+}
+
+/**
+ * Dependências injetáveis — permite testar o worker sem rede e sem DB.
+ * Em produção, todos os defaults são os módulos reais.
+ */
+export interface WorkerDeps {
+  fetcher?: Fetcher;
+  getRecipe?: (supplierId: string) => Promise<SupplierRecipe | null>;
+  autoConfigure?: typeof autoConfigureSupplier;
+  runRecipe?: typeof runSupplierRecipe;
+  insertResult?: typeof searchService.insertResult;
+  markRunning?: typeof searchService.markRunning;
+  finalizeStatus?: typeof searchService.finalizeStatus;
+  convertToBrl?: typeof searchService.convertToBrl;
+  cacheGet?: <T>(supplierId: string, key: string) => Promise<T | null>;
+  cacheSet?: (supplierId: string, key: string, value: unknown) => Promise<void>;
+}
+
+interface CachedResult {
+  status: ResultStatus;
+  productName?: string;
+  price?: number;
+  currency?: string;
+  productUrl?: string;
+  linkType?: 'product' | 'search' | 'unverified';
+  linkValidated?: boolean;
+  evidenceText?: string;
+  sourceUrl?: string;
+  sourceName?: string;
+  freightStatus?: 'not_available' | 'free_confirmed' | 'confirmed' | 'estimated';
+  freight?: number | null;
+  available?: boolean;
+  cachedAt: string;
 }
 
 async function withConcurrency<T>(
@@ -58,134 +109,223 @@ async function withConcurrency<T>(
   await Promise.all(runners);
 }
 
-function applyTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`tempo esgotado para ${label}`)), ms);
-    promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e instanceof Error ? e : new Error(String(e))); },
-    );
-  });
+/**
+ * Porta de qualidade do cache. Erros e resultados sem evidência NUNCA
+ * podem entrar/sair do cache como se fossem validated.
+ */
+export function isCacheValid(c: CachedResult | null | undefined): boolean {
+  if (!c) return false;
+  if (c.status !== 'validated') return false;
+  if (typeof c.price !== 'number' || !Number.isFinite(c.price) || c.price <= 0) return false;
+  if (!c.productName || c.productName.trim() === '') return false;
+  if (!c.currency || c.currency.trim() === '') return false;
+  if (!c.productUrl || c.productUrl.trim() === '') return false;
+  if (c.linkType !== 'product') return false;
+  if (c.linkValidated !== true) return false;
+  if (!c.evidenceText || c.evidenceText.trim() === '') return false;
+  return true;
 }
 
-interface CachedResult extends ScrapedResult {
-  cachedAt: string;
+function universalToCacheable(u: UniversalSearchResult): CachedResult {
+  return {
+    status: 'validated',
+    productName: u.productName,
+    price: u.price ?? undefined,
+    currency: u.currency ?? undefined,
+    productUrl: u.productUrl ?? undefined,
+    linkType: u.linkType === 'product' && u.linkValidated ? 'product' : 'unverified',
+    linkValidated: u.linkValidated,
+    evidenceText: u.evidence?.evidenceText,
+    sourceUrl: u.evidence?.sourceUrl,
+    sourceName: 'v2_recipe_runner',
+    freightStatus: u.freightStatus,
+    freight: u.freight ?? null,
+    available: u.available ?? undefined,
+    cachedAt: new Date().toISOString(),
+  };
+}
+
+function cachedToUniversal(c: CachedResult): UniversalSearchResult {
+  // Reconstrói com status='validated' porque o cache só armazena resultados
+  // que passaram por isCacheValid (que exige status='validated' na origem).
+  // O adapter (mapUniversalResultToInsertPayload) com fromCache=true cuida
+  // de marcar `status='cached'` no payload persistido.
+  return {
+    found: true,
+    status: 'validated',
+    productName: c.productName,
+    price: c.price ?? null,
+    currency: c.currency ?? null,
+    freight: c.freight ?? null,
+    freightStatus: c.freightStatus ?? 'not_available',
+    totalPrice: null,
+    productUrl: c.productUrl ?? null,
+    linkType: c.linkType === 'product' ? 'product' : 'unknown',
+    linkValidated: c.linkValidated ?? false,
+    matchScore: null,
+    confidence: null,
+    available: c.available ?? null,
+    warning: null,
+    errorMessage: null,
+    evidence: c.evidenceText && c.sourceUrl
+      ? {
+          sourceUrl: c.sourceUrl,
+          sourceName: c.sourceName,
+          evidenceText: c.evidenceText,
+          extractedAt: c.cachedAt,
+          strategy: 'json_ld',
+        }
+      : null,
+  };
 }
 
 export async function runSearchWorker(input: WorkerInput): Promise<void> {
   const { searchId, query, suppliers, forceRefresh } = input;
+  const deps = input.deps ?? {};
   const normalizedQuery = matchingService.cacheKey(query);
 
+  const getRecipe = deps.getRecipe ?? ((id) => supplierService.getRecipe(id));
+  const doAutoConfigure = deps.autoConfigure ?? autoConfigureSupplier;
+  const doRunRecipe = deps.runRecipe ?? runSupplierRecipe;
+  const doInsertResult = deps.insertResult ?? searchService.insertResult.bind(searchService);
+  const doMarkRunning = deps.markRunning ?? searchService.markRunning.bind(searchService);
+  const doFinalize = deps.finalizeStatus ?? searchService.finalizeStatus.bind(searchService);
+  const doConvert = deps.convertToBrl ?? searchService.convertToBrl.bind(searchService);
+  const doCacheGet =
+    deps.cacheGet ??
+    (<T>(id: string, k: string) => cacheService.getSupplierResult<T>(id, k));
+  const doCacheSet =
+    deps.cacheSet ?? ((id, k, v) => cacheService.setSupplierResult(id, k, v));
+
   if (suppliers.length === 0) {
-    await searchService.finalizeStatus(searchId);
+    await doFinalize(searchId);
     return;
   }
 
-  await searchService.markRunning(searchId).catch(() => {});
-
-  // NOTA: quota Gemini esgotada NÃO bloqueia outros fornecedores.
-  // O motor principal é extração direta (sem IA). Gemini é só fallback opcional.
+  await doMarkRunning(searchId).catch(() => {});
 
   await withConcurrency(suppliers, config.SEARCH_CONCURRENCY, async (sup) => {
-    // ─── 1. Tenta cache (apenas resultados válidos com preço; nunca erros) ──
-    let scraped: ScrapedResult | null = null;
-    let fromCache = false;
-    if (config.ENABLE_SEARCH_CACHE && !forceRefresh) {
-      const cached = await cacheService.getSupplierResult<CachedResult>(sup.id, normalizedQuery);
-      if (cached && cached.found && typeof cached.price === 'number' && cached.price > 0 && cached.productName) {
-        scraped = cached;
-        fromCache = true;
-      }
-    }
-
-    // ─── 2. Cache miss → motor universal com fallback automático ──
-    let externalStatus: ResultStatus | null = null; // 'timeout' | 'error' (interceptado fora do scraper)
-    if (!scraped) {
-      try {
-        const attempt = await applyTimeout(
-          scrapeWithFallback(sup, query, { timeoutMs: config.SUPPLIER_TIMEOUT_MS }),
-          config.SUPPLIER_TIMEOUT_MS + 2000,
-          sup.name,
-        );
-        scraped = attempt.result;
-      } catch (e) {
-        const msg = (e as Error).message ?? '';
-        const isTimeout = /tempo esgotado|timed out|abort/i.test(msg);
-        externalStatus = isTimeout ? 'timeout' : 'error';
-        const friendly = isTimeout
-          ? `Timeout no fornecedor ${sup.name}`
-          : msg || 'Falha desconhecida no fornecedor';
-        scraped = { found: false, status: externalStatus, errorMessage: friendly };
-      }
-    }
-
-    // ─── 3. Persiste resultado com status derivado ───────────
-    const finalStatus: ResultStatus = externalStatus ?? deriveWorkerStatus({
-      fromCache,
-      found: scraped.found,
-      hasPrice: typeof scraped.price === 'number' && scraped.price > 0,
-      hasCurrency: !!scraped.currency,
-      scraperStatus: scraped.status,
-    });
+    const t0 = Date.now();
+    let route = 'unknown';
 
     try {
-      if (scraped.found && typeof scraped.price === 'number' && scraped.price > 0 && scraped.currency) {
-        const { brl, rate } = await searchService.convertToBrl(scraped.price, scraped.currency);
-        const freight = scraped.freight ?? 0;
-        const totalPrice = parseFloat((scraped.price + freight).toFixed(4));
-        const totalBrl = rate > 0
-          ? parseFloat((totalPrice * rate).toFixed(4))
-          : brl + freight; // fallback: BRL sem rate
+      // ─── 1. Cache (porta de qualidade estrita) ─────────────────────
+      if (config.ENABLE_SEARCH_CACHE && !forceRefresh) {
+        const cached = await doCacheGet<CachedResult>(sup.id, normalizedQuery).catch(
+          () => null,
+        );
+        if (cached && isCacheValid(cached)) {
+          route = 'cache';
+          const universal = cachedToUniversal(cached);
+          const payload = await mapUniversalResultToInsertPayload({
+            result: universal,
+            convertToBrl: doConvert,
+            sourceName: cached.sourceName ?? 'v2_recipe_runner',
+            fromCache: true,
+          });
+          await doInsertResult(searchId, sup, payload);
+          console.log(
+            `[worker] ${sup.name} | route: ${route} | status: ${payload.status} | elapsed: ${Date.now() - t0}ms`,
+          );
+          return;
+        }
+      }
 
-        await searchService.insertResult(searchId, sup, {
-          found: true,
-          status: finalStatus,
-          productName: scraped.productName,
-          sellerName: scraped.sellerName,
-          price: scraped.price,
-          freight,
-          totalPrice,
-          currency: scraped.currency,
-          exchangeRateUsed: rate || undefined,
-          totalBrl,
-          productUrl: scraped.link,
-          matchScore: scraped.matchScore,
-          confidence: scraped.confidence,
-          available: scraped.available,
-          warning: scraped.warning,
-          fromCache,
-          // Etapa 5.1 — campos de validação
-          linkType: scraped.linkType,
-          linkValidated: scraped.linkValidated ?? false,
-          evidenceText: scraped.evidenceText,
-          sourceUrl: scraped.sourceUrl,
-          sourceName: scraped.sourceName,
-          validationWarning: scraped.validationWarning,
-        });
+      // ─── 2. Carrega recipe ─────────────────────────────────────────
+      let recipe: SupplierRecipe | null = await getRecipe(sup.id).catch(() => null);
 
-        // Salva no cache (só se foi busca fresh — não recache cache)
-        if (!fromCache) {
-          const toCache: CachedResult = { ...scraped, cachedAt: new Date().toISOString() };
-          void cacheService.setSupplierResult(sup.id, normalizedQuery, toCache)
-            .catch((e) => console.warn('[worker] cache set falhou', e));
+      // ─── 3. AutoConfig se receita não certificada ──────────────────
+      if (!recipe || recipe.status !== 'certified') {
+        try {
+          const autoResult = await doAutoConfigure(sup.id);
+          if (autoResult.status === 'certified' && autoResult.recipe) {
+            recipe = autoResult.recipe;
+            route = 'autoconfig_then_recipe';
+          } else {
+            // AutoConfig não certificou — grava status controlado
+            const reason = autoResult.error ?? autoResult.status;
+            await doInsertResult(searchId, sup, {
+              found: false,
+              status: 'error',
+              errorMessage: `needs_supplier_setup: ${reason}`,
+              fromCache: false,
+              sourceName: 'v2_autoconfig',
+            });
+            console.log(
+              `[worker] ${sup.name} | route: autoconfig_not_certified | status: needs_supplier_setup(${autoResult.status}) | elapsed: ${Date.now() - t0}ms`,
+            );
+            return;
+          }
+        } catch (e) {
+          const msg = (e as Error).message ?? 'autoconfig falhou';
+          await doInsertResult(searchId, sup, {
+            found: false,
+            status: 'error',
+            errorMessage: `needs_supplier_setup: autoConfig exception: ${msg}`,
+            fromCache: false,
+            sourceName: 'v2_autoconfig_error',
+          });
+          console.log(
+            `[worker] ${sup.name} | route: autoconfig_error | status: error | elapsed: ${Date.now() - t0}ms`,
+          );
+          return;
         }
       } else {
-        // ─── REGRA-OURO: jamais inventar preço ──────────
-        await searchService.insertResult(searchId, sup, {
-          found: false,
-          status: finalStatus,
-          errorMessage: scraped.errorMessage ?? 'preço não encontrado com segurança',
-          fromCache: false,
-        });
+        route = 'recipe';
       }
+
+      // ─── 4. Executa recipe ─────────────────────────────────────────
+      const v2Result: UniversalSearchResult = await doRunRecipe({
+        supplier: sup,
+        recipe: recipe!,
+        query,
+        ...(deps.fetcher ? { fetcher: deps.fetcher } : {}),
+        timeoutMs: config.SUPPLIER_TIMEOUT_MS,
+      });
+
+      // ─── 5. Persiste resultado ─────────────────────────────────────
+      const payload = await mapUniversalResultToInsertPayload({
+        result: v2Result,
+        convertToBrl: doConvert,
+        sourceName: 'v2_recipe_runner',
+        fromCache: false,
+      });
+      await doInsertResult(searchId, sup, payload);
+
+      // ─── 6. Cache (só validated com isCacheValid passando) ────────
+      if (v2Result.status === 'validated' && payload.status === 'validated') {
+        const toCache = universalToCacheable(v2Result);
+        if (isCacheValid(toCache)) {
+          void doCacheSet(sup.id, normalizedQuery, toCache).catch((e) =>
+            console.warn('[worker] cache set falhou', e),
+          );
+        }
+      }
+
+      console.log(
+        `[worker] ${sup.name} | route: ${route} | status: ${payload.status} | elapsed: ${Date.now() - t0}ms`,
+      );
     } catch (e) {
-      console.error('[worker] insertResult falhou', sup.name, e);
+      // Última linha de defesa: nunca derruba a busca inteira.
+      const msg = (e as Error).message ?? 'erro inesperado no worker';
+      console.error('[worker] supplier task falhou', sup.name, e);
+      try {
+        await doInsertResult(searchId, sup, {
+          found: false,
+          status: 'error',
+          errorMessage: `V2 worker: ${msg.slice(0, 200)}`,
+          fromCache: false,
+          sourceName: 'v2_worker_error',
+        });
+      } catch (e2) {
+        console.error('[worker] insertResult fallback falhou', sup.name, e2);
+      }
     }
   });
 
-  // ─── 4. Status final ───────────────────────────────────
+  // ─── Finaliza status da busca ──────────────────────────────────────
   try {
-    await searchService.finalizeStatus(searchId);
+    await doFinalize(searchId);
   } catch (e) {
     console.error('[worker] finalizeStatus falhou', e);
   }
