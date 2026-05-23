@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ratesApi } from '@/lib/api';
 import { fmt4, rateAge } from '@/lib/format';
 import { showToast } from './Toast';
@@ -12,10 +12,14 @@ const STALE_MS = 60_000;
 export default function RateBar() {
   const [rates, setRates] = useState<RatesPayload | null>(null);
   const [loading, setLoading] = useState(false);
+  // Evita que o tick automático (cache) sobrescreva o resultado de um refresh manual em andamento.
+  const manualInFlight = useRef(false);
 
   const load = useCallback(async (force = false) => {
     try {
       const r = force ? await ratesApi.refresh() : await ratesApi.current();
+      // Se um refresh manual estiver em andamento, o tick automático não sobrescreve.
+      if (!force && manualInFlight.current) return r;
       setRates(r);
       return r;
     } catch (e) {
@@ -33,16 +37,24 @@ export default function RateBar() {
   async function onRefresh() {
     if (loading) return;
     setLoading(true);
+    manualInFlight.current = true;
     showToast('Atualizando cotações…');
-    const r = await load(true);
-    setLoading(false);
-    if (!r) return showToast('Sem cotação disponível — tente novamente em 1 minuto', 'err');
-    if (!r.from_cache && !r.partial)
-      showToast(`Cotação atualizada: USD ${fmt4(r.usd ?? 0)} · EUR ${fmt4(r.eur ?? 0)} · CNY ${fmt4(r.cny ?? 0)}`);
-    else if (!r.from_cache && r.partial)
-      showToast(`Atualização parcial: USD ${fmt4(r.usd ?? 0)}`);
-    else if (r.usd)
-      showToast(`Mantendo última cotação: USD ${fmt4(r.usd)} (próxima tentativa em 1min)`);
+    try {
+      const r = await load(true);
+      if (!r) {
+        showToast('Sem cotação disponível — tente novamente em 1 minuto', 'err');
+        return;
+      }
+      if (!r.from_cache && !r.partial)
+        showToast(`Cotação atualizada: USD ${fmt4(r.usd ?? 0)} · EUR ${fmt4(r.eur ?? 0)} · CNY ${fmt4(r.cny ?? 0)}`);
+      else if (!r.from_cache && r.partial)
+        showToast(`Atualização parcial: USD ${fmt4(r.usd ?? 0)}`);
+      else if (r.usd)
+        showToast(`Mantendo última cotação: USD ${fmt4(r.usd)} (próxima tentativa em 1min)`);
+    } finally {
+      manualInFlight.current = false;
+      setLoading(false);
+    }
   }
 
   const stale = rates?.fetched_at

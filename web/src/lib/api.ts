@@ -79,5 +79,9 @@ export type { SearchResult };
 
 export const ratesApi = {
   current: () => request<RatesPayload>('/api/rates'),
-  refresh: () => request<RatesPayload>('/api/rates/refresh', { method: 'POST' }),
+  // force=true ignora cache no backend. _t é cache-buster contra proxies/CDNs.
+  refresh: () =>
+    request<RatesPayload>(`/api/rates?force=true&_t=${Date.now()}`, {
+      headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
+    }),
 };
