@@ -19,6 +19,9 @@ export type FetcherStatus =
   | 'not_found'
   | 'error';
 
+/** Provider de coleta usado pelo Fetcher em produção. */
+export type ContentProvider = 'direct_fetch' | 'firecrawl_scrape';
+
 export interface FetcherResult {
   status: FetcherStatus;
   httpStatus?: number;

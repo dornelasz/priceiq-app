@@ -43,6 +43,18 @@ const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true' || v === '1' || v === 'yes'),
 
+  // ─── Firecrawl (provider de coleta, opcional) ───────────
+  // Integra ao V2 como provider de busca e produto em sites que bloqueiam
+  // direct_fetch (ex: Amazon BR, Shopee). Nunca hardcode a chave.
+  //
+  // Para ativar no Render:
+  //   FIRECRAWL_API_KEY=fc-<sua-chave>
+  //   FIRECRAWL_MODE=fallback   (ou preferred para Firecrawl primeiro)
+  //
+  // Com API key vazia: Firecrawl desativado, só direct_fetch é usado.
+  FIRECRAWL_API_KEY: z.string().default(''),
+  FIRECRAWL_MODE: z.enum(['preferred', 'fallback']).default('fallback'),
+
   // ─── Playwright (último fallback, opcional) ──────────────
   // Desligado por padrão. Para usar:
   //   cd server && npm install playwright && npx playwright install chromium

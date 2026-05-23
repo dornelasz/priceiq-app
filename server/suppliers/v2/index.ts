@@ -59,6 +59,10 @@ export {
   type Fetcher,
   type FetcherResult,
   type FetcherStatus,
+  type ContentProvider,
+  createFirecrawlFetcher,
+  createFetcherForConfig,
+  type FetcherConfig,
 } from './fetching/index.js';
 
 export {

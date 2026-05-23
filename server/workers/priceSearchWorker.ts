@@ -31,9 +31,10 @@ import { supplierService, type Supplier } from '../services/supplierService.js';
 import { cacheService } from '../services/cacheService.js';
 import { matchingService } from '../services/matchingService.js';
 import type { ResultStatus } from '../lib/resultStatus.js';
-import { autoConfigureSupplier } from '../suppliers/v2/autoConfig/index.js';
+import { autoConfigureSupplier, type AutoConfigOptions } from '../suppliers/v2/autoConfig/index.js';
 import { runSupplierRecipe } from '../suppliers/v2/recipeRunner/index.js';
 import { mapUniversalResultToInsertPayload } from '../suppliers/v2/integration/index.js';
+import { createFetcherForConfig } from '../suppliers/v2/fetching/index.js';
 import type {
   SupplierRecipe,
   UniversalSearchResult,
@@ -184,8 +185,21 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
   const deps = input.deps ?? {};
   const normalizedQuery = matchingService.cacheKey(query);
 
+  // Fetcher unificado: usa Firecrawl se configurado, ou direct_fetch por padrão.
+  // deps.fetcher sobrescreve em testes (sem tocar em Firecrawl).
+  const effectiveFetcher: Fetcher = deps.fetcher ?? createFetcherForConfig({
+    firecrawlApiKey: config.FIRECRAWL_API_KEY,
+    firecrawlMode: config.FIRECRAWL_MODE,
+  });
+
   const getRecipe = deps.getRecipe ?? ((id) => supplierService.getRecipe(id));
-  const doAutoConfigure = deps.autoConfigure ?? autoConfigureSupplier;
+
+  // AutoConfig passa o fetcher unificado para consistência com o recipeRunner.
+  const doAutoConfigure =
+    deps.autoConfigure ??
+    ((id: string, opts: AutoConfigOptions = {}) =>
+      autoConfigureSupplier(id, { fetcher: effectiveFetcher, ...opts }));
+
   const doRunRecipe = deps.runRecipe ?? runSupplierRecipe;
   const doInsertResult = deps.insertResult ?? searchService.insertResult.bind(searchService);
   const doMarkRunning = deps.markRunning ?? searchService.markRunning.bind(searchService);
@@ -279,7 +293,7 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
         supplier: sup,
         recipe: recipe!,
         query,
-        ...(deps.fetcher ? { fetcher: deps.fetcher } : {}),
+        fetcher: effectiveFetcher,
         timeoutMs: config.SUPPLIER_TIMEOUT_MS,
       });
 
@@ -307,13 +321,22 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
       );
     } catch (e) {
       // Última linha de defesa: nunca derruba a busca inteira.
-      const msg = (e as Error).message ?? 'erro inesperado no worker';
+      // Classifica o erro para dar mensagem acionável em vez de "Erro inesperado".
+      const msg = (e as Error).message ?? 'falha técnica no worker';
       console.error('[worker] supplier task falhou', sup.name, e);
+      const isTimeout = /timeout|abort|tempo esgotado/i.test(msg);
+      const isNetwork = /ECONNREFUSED|ENOTFOUND|network|fetch failed/i.test(msg);
+      const status: ResultStatus = isTimeout ? 'timeout' : 'error';
+      const errorMessage = isTimeout
+        ? `timeout ao buscar em ${sup.name} — tente novamente`
+        : isNetwork
+          ? `fornecedor inacessível (${sup.name}) — verifique se o site está no ar`
+          : `falha técnica em ${sup.name}: ${msg.slice(0, 150)}`;
       try {
         await doInsertResult(searchId, sup, {
           found: false,
-          status: 'error',
-          errorMessage: `V2 worker: ${msg.slice(0, 200)}`,
+          status,
+          errorMessage,
           fromCache: false,
           sourceName: 'v2_worker_error',
         });
