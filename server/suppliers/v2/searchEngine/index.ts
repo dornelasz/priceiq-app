@@ -100,3 +100,28 @@ export {
   type SearchAttempt,
   type MakeSearchAttemptInput,
 } from './diagnostics/searchAttempt.js';
+
+// ─── Discovery: descoberta própria de URLs de produto (Etapa 6) ───────────
+export {
+  discoverProductUrls,
+  buildDiscoverySearchUrl,
+  extractUrls,
+  normalizeCandidateUrl,
+  removeTrackingParams,
+  getSupplierDomain,
+  rankCandidates,
+  scoreCandidateUrl,
+  tokenizeQuery,
+  type DiscoveryStatus,
+  type RankedCandidate,
+  type DiscoveryDiagnostics,
+  type DiscoverProductUrlsInput,
+  type DiscoverProductUrlsResult,
+  type SearchUrlSource,
+  type BuildDiscoverySearchUrlInput,
+  type BuildDiscoverySearchUrlResult,
+  type ExtractedUrl,
+  type ExtractedUrlSource,
+  type ExtractUrlsInput,
+  type ExtractUrlsResult,
+} from './discovery/index.js';
