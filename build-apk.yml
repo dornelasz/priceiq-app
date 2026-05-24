@@ -1,50 +1,19 @@
-name: Build Android APK
-
-on:
-  workflow_dispatch:
-  push:
-    branches: [ main ]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Add Android platform
-        run: |
-          if [ ! -d "android" ]; then
-            npx cap add android
-          fi
-
-      - name: Sync Capacitor
-        run: npx cap sync android
-
-      - name: Build debug APK
-        run: |
-          cd android
-          chmod +x ./gradlew
-          ./gradlew assembleDebug
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: PriceIQ-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+# ⚠️ ARQUIVO OBSOLETO — NÃO É EXECUTADO PELO GITHUB ACTIONS
+#
+# Este arquivo está na raiz do repositório por motivos históricos. O GitHub
+# Actions só executa workflows em `.github/workflows/`, então este arquivo
+# nunca rodou. Ele costumava ser uma versão antiga do build do APK que
+# fazia `npm install && npx cap sync` sem proteções contra empacotar o
+# `index.html` legado.
+#
+# O workflow REAL e atual está em:
+#   .github/workflows/build-apk.yml
+#
+# Esse workflow ativo:
+#   1. Exige PRICEIQ_FRONTEND_URL (var/secret/input) — falha se ausente.
+#   2. Injeta a URL real no capacitor.config.json.
+#   3. Gera um shell offline mínimo em www/index.html (nunca o legado).
+#   4. Compila o APK que abre a URL real do SaaS no WebView.
+#
+# Mantido aqui apenas como sinalização — para apagar com segurança,
+# basta `git rm build-apk.yml` em um commit dedicado.

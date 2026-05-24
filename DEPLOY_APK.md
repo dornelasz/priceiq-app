@@ -42,10 +42,13 @@ o empacotamento do `index.html` legado pela "Opção A" do plano.
 └──────────────────────────────────┘
 ```
 
-- O APK **não empacota `index.html` legado**. Empacota apenas um shell
-  mínimo de "Carregando…" que é mostrado se a Internet falhar antes da
+- O APK **não empacota `legacy/index.html` (legado)**. Empacota apenas um
+  shell mínimo de "Carregando…" que é mostrado se a Internet falhar antes da
   Vercel responder.
-- O `index.html` legado **continua no repo** (não removido nesta fase).
+- O `legacy/index.html` **continua no repo** apenas como referência
+  histórica (não é deployado em lugar nenhum).
+- O `index.html` na **raiz** é uma página de aviso de deprecação (para o
+  caso de alguém acessar `https://dornelasz.github.io/priceiq-app`).
 
 ---
 
@@ -138,28 +141,31 @@ o empacotamento do `index.html` legado pela "Opção A" do plano.
    ```
    Esse log é a prova de que a Fase E está em ação.
 
-### Passo 6 — Editar `capacitor.config.json` com URL real da Vercel
+### Passo 6 — Configurar `PRICEIQ_FRONTEND_URL` no GitHub (uma vez)
 
-> **Importante**: até aqui o `capacitor.config.json` está com um placeholder
-> (`https://COLOQUE-AQUI-A-URL-DO-FRONTEND-VERCEL`). Antes de gerar o APK,
-> você precisa substituir pelo URL real da Vercel.
+> **Importante:** o `capacitor.config.json` no repo tem o token
+> `__PRICEIQ_FRONTEND_URL__` em vez de uma URL hardcoded. O workflow
+> substitui esse token pela URL real **em build-time**, lida da
+> Variable/Secret do repo. Isso evita commitar URLs reais.
 
-Opção A (pelo celular, sem mexer no repo direto):
+1. Abra o repo no GitHub → **Settings** → **Secrets and variables** →
+   **Actions** → aba **Variables** → **New repository variable**.
+2. Name: `PRICEIQ_FRONTEND_URL`
+3. Value: a URL real da Vercel (ex: `https://priceiq.vercel.app`),
+   **sem barra no final**.
+4. Salve.
 
-1. Abra o GitHub app → repo `priceiq-app` → `capacitor.config.json` → ícone do lápis (edit).
-2. Troque a linha `"url": "https://COLOQUE-AQUI-A-URL-DO-FRONTEND-VERCEL",`
-   pela URL real, ex: `"url": "https://priceiq.vercel.app",`.
-3. Commit direto pela UI do GitHub: mensagem sugerida
-   `chore(apk): apontar Capacitor para URL real da Vercel`.
+> Pode usar **Secret** em vez de **Variable** — o workflow lê ambos. Use
+> Secret se preferir esconder a URL nos logs públicos.
+>
+> Para sobrescrever apenas em uma execução (ex: testar branch alternativa),
+> use o campo `frontend_url` ao clicar em "Run workflow".
 
-Opção B (no terminal local, se preferir):
+Se você esquecer este passo, o workflow falha logo no primeiro step com:
 
-```bash
-git checkout main && git pull
-sed -i 's|https://COLOQUE-AQUI-A-URL-DO-FRONTEND-VERCEL|https://priceiq.vercel.app|' capacitor.config.json
-git add capacitor.config.json
-git commit -m "chore(apk): apontar Capacitor para URL real da Vercel"
-git push origin main
+```
+::error::PRICEIQ_FRONTEND_URL não está configurada.
+::error::Configure como Variable ou Secret do repo, ou passe pelo workflow_dispatch.
 ```
 
 ### Passo 7 — Gerar o APK
@@ -189,7 +195,7 @@ Resumo único:
 | Render | `DATABASE_URL` | *(cola do Neon)* |
 | Render | `FRONTEND_URL` | *(URL da Vercel, atualizar depois do passo 3)* |
 | Vercel | `NEXT_PUBLIC_API_URL` | *(URL do Render do passo 2)* |
-| Repo | `capacitor.config.json` → `server.url` | *(URL da Vercel)* |
+| GitHub repo | Variable/Secret `PRICEIQ_FRONTEND_URL` | *(URL da Vercel — não commita no repo)* |
 
 ---
 
@@ -218,8 +224,13 @@ Resumo único:
 
 ## Troubleshooting rápido
 
-- **APK abre mas mostra "Carregando…" eterno**: confirma que o
-  `capacitor.config.json` tem a URL real da Vercel (passo 6).
+- **APK abre mas mostra "Carregando…" eterno**: confirma que
+  `PRICEIQ_FRONTEND_URL` foi configurada no GitHub (Settings → Actions →
+  Variables) e que aponta para uma URL Vercel real.
+- **APK abre mas mostra "CAPTURA ASSISTIDA" / "Colar texto" / "Manual"**:
+  sua `PRICEIQ_FRONTEND_URL` está apontando para o GitHub Pages do legado
+  (https://dornelasz.github.io/priceiq-app) em vez do Vercel SaaS. Troque
+  para a URL do Vercel.
 - **APK abre Vercel mas busca dá erro 500**: verifica logs do Render
   → provavelmente `DATABASE_URL` ou `FRONTEND_URL` errados.
 - **Busca dá CORS error no console do browser**: `FRONTEND_URL` no Render

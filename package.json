@@ -4,7 +4,7 @@
   "private": true,
   "description": "PriceIQ — SaaS de comparação de preços com cotação Investing.com ao vivo. Migração em andamento do single-file app para arquitetura web + API.",
   "scripts": {
-    "build:apk": "echo 'single-file app: index.html — ver capacitor.config.json'",
+    "build:apk": "echo 'O APK é gerado pelo GitHub Actions (.github/workflows/build-apk.yml). Veja README_GERAR_APK.txt e docs/deployment-entrypoint.md.' && exit 1",
     "sync": "npx cap sync android",
     "open": "npx cap open android",
     "dev:up": "docker compose up -d",

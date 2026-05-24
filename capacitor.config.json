@@ -4,7 +4,7 @@
   "webDir": "www",
   "bundledWebRuntime": false,
   "server": {
-    "url": "https://COLOQUE-AQUI-A-URL-DO-FRONTEND-VERCEL",
+    "url": "__PRICEIQ_FRONTEND_URL__",
     "androidScheme": "https",
     "cleartext": false
   }

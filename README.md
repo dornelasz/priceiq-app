@@ -4,29 +4,40 @@
 
 ## Estado atual
 
-PriceIQ está em transição de **app single-file** para **SaaS web completo**. As duas versões coexistem.
+PriceIQ é um **SaaS web** com backend Fastify e frontend Next.js. O
+single-file legado foi aposentado e movido para `legacy/` apenas como
+referência histórica.
 
-### Versão legada (ainda online)
-- **`index.html`** — app standalone (HTML/CSS/JS), deployado em GitHub Pages
-- **URL:** https://dornelasz.github.io/priceiq-app
-- **Função:** referência visual e backup. NÃO é o alvo da migração SaaS.
+### Entrada real (produção)
+- **`web/`** — frontend Next.js 14 (App Router), hospedado em Vercel.
+- **`server/`** — backend Fastify + Postgres, hospedado em Render.
+- **APK Android** — wrapper Capacitor que abre `PRICEIQ_FRONTEND_URL` no WebView.
 
-### Versão SaaS (Etapas 1-4 concluídas)
-- **`server/`** — backend Fastify + Postgres + Redis (cotação, busca, suppliers, histórico)
-- **`web/`** — frontend Next.js 14 (App Router) com visual idêntico ao legado
-- **`docker-compose.yml`** — Postgres 16 + Redis 7 para dev
+### Versão legada (não é a entrada)
+- **`legacy/index.html`** — antigo app standalone com Gemini e captura
+  assistida. **Não é mais usado**, mantido só por histórico.
+- **`index.html`** na raiz — apenas página de aviso de deprecação para
+  quem ainda acessar a URL antiga do GitHub Pages.
+
+> **Detalhes do entrypoint:** veja `docs/deployment-entrypoint.md`.
 
 ## Estrutura
 
 ```
 priceiq-app/
-├── index.html              App legado em produção (referência visual)
-├── web/                    ✨ Frontend Next.js 14 (Etapa 4)
+├── index.html              ⚠️ Página de aviso de deprecação (não é o app)
+├── legacy/
+│   └── index.html          Código legado preservado (não é deployado)
+├── web/                    Frontend Next.js 14 — entrada real do SaaS
 │   └── src/{app,components,lib}/
-├── server/                 ✨ Backend Fastify + Postgres + Redis (Etapas 2-3)
-│   └── {routes,services,scrapers,workers,db,lib}/
-├── infra/                  Configs de infraestrutura
-├── docs/                   Documentação de arquitetura
+├── server/                 Backend Fastify + Postgres + Redis
+│   └── {routes,services,suppliers/v2,workers,db,lib}/
+├── capacitor.config.json   Token __PRICEIQ_FRONTEND_URL__ — injetado no build
+├── .github/workflows/
+│   └── build-apk.yml       Valida PRICEIQ_FRONTEND_URL e gera APK
+├── docs/
+│   ├── architecture.md
+│   └── deployment-entrypoint.md
 ├── docker-compose.yml      Postgres + Redis para dev
 └── package.json
 ```
@@ -58,7 +69,7 @@ npm run dev                # http://localhost:3000
 ### Vercel (frontend) + Render (backend) — recomendado
 1. **Render**: provisione Postgres + Redis + Web Service apontando para `server/`. Definir `GEMINI_API_KEY`.
 2. **Vercel**: importar repo, root = `web/`, env `NEXT_PUBLIC_API_URL = https://<sua-api>.onrender.com`
-3. Acessar a URL do Vercel — visual idêntico ao `index.html`, mas dados vêm do backend.
+3. Acessar a URL do Vercel — UI Next.js do SaaS real (visual herdado do antigo `legacy/index.html`, mas dados vêm do backend).
 
 ## Roadmap
 
@@ -114,8 +125,8 @@ O PriceIQ usa **um único motor universal** para pesquisar produtos em qualquer 
 
 ## Frontend principal
 
-- **Versão SaaS:** `web/` (Next.js 14, App Router) — frontend ativo da migração SaaS.
-- **Legado:** `index.html` — backup/referência visual no GitHub Pages, **não** consome o backend; não interfere na versão SaaS.
+- **Entrada real:** `web/` (Next.js 14, App Router). Único frontend em produção.
+- **Legado:** `legacy/index.html` — preservado só por histórico, não é deployado nem empacotado no APK. A raiz tem um `index.html` mínimo de aviso de deprecação.
 
 ## Backend principal
 
@@ -140,7 +151,7 @@ Gemini NUNCA:
 ## Regras invioláveis
 
 - ❌ **Não alterar** a fonte da cotação — Investing.com é única; não usar AwesomeAPI, IA ou cotação manual
-- ❌ **Não redesenhar** a UI — visual de `index.html` é a fonte da verdade
+- ❌ **Não redesenhar** a UI — visual de `legacy/index.html` é a fonte da verdade visual (mas o app em produção é `web/`)
 - ❌ **Gemini é opcional e roda apenas no backend** — chave em `server/.env`, nunca no frontend
 - ❌ **Não inventar preço** — `urlValidator` + extração direta rejeitam resultados sem evidência
 - ❌ **Migração incremental** — cada etapa em PR separado, sem quebrar o legado

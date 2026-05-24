@@ -2,6 +2,11 @@ name: Build Android APK
 
 on:
   workflow_dispatch:
+    inputs:
+      frontend_url:
+        description: 'URL pública do frontend SaaS (ex: https://priceiq.vercel.app). Sobrescreve a var/secret PRICEIQ_FRONTEND_URL.'
+        required: false
+        type: string
   push:
     branches:
       - main
@@ -14,6 +19,36 @@ jobs:
     steps:
       - name: Checkout project
         uses: actions/checkout@v4
+
+      - name: Validate PRICEIQ_FRONTEND_URL
+        # Fonte da URL real do SaaS, em ordem de prioridade:
+        #   1. input do workflow_dispatch (frontend_url)
+        #   2. variable do repo: vars.PRICEIQ_FRONTEND_URL
+        #   3. secret do repo: secrets.PRICEIQ_FRONTEND_URL
+        # Se nenhuma estiver presente → falha com mensagem acionável.
+        # NUNCA usar URL hardcoded como fallback.
+        env:
+          INPUT_URL: ${{ github.event.inputs.frontend_url }}
+          VAR_URL: ${{ vars.PRICEIQ_FRONTEND_URL }}
+          SECRET_URL: ${{ secrets.PRICEIQ_FRONTEND_URL }}
+        run: |
+          URL="${INPUT_URL:-${VAR_URL:-${SECRET_URL:-}}}"
+          if [ -z "$URL" ]; then
+            echo "::error::PRICEIQ_FRONTEND_URL não está configurada."
+            echo "::error::Configure como Variable ou Secret do repo, ou passe pelo workflow_dispatch."
+            echo "::error::Ex: https://priceiq.vercel.app"
+            exit 1
+          fi
+          if ! echo "$URL" | grep -qE '^https://[a-zA-Z0-9.-]+'; then
+            echo "::error::PRICEIQ_FRONTEND_URL inválida: '$URL'. Deve começar com https://"
+            exit 1
+          fi
+          if echo "$URL" | grep -qi 'COLOQUE-AQUI'; then
+            echo "::error::PRICEIQ_FRONTEND_URL ainda é o placeholder. Coloque a URL real do Vercel."
+            exit 1
+          fi
+          echo "PRICEIQ_FRONTEND_URL=$URL" >> "$GITHUB_ENV"
+          echo "::notice::APK será gerado apontando para: $URL"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -29,12 +64,32 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Prepare offline shell for Capacitor
-        # O APK abre `capacitor.config.json -> server.url` (URL da Vercel)
-        # como WebView remoto. O `www/` é EXIGIDO pelo Capacitor como
-        # fallback offline — gravamos aqui um shell mínimo que NUNCA é o
-        # `index.html` legado. Se a Internet falhar antes da URL remota
-        # carregar, o usuário vê apenas uma tela de "Carregando".
+      - name: Inject PRICEIQ_FRONTEND_URL into capacitor.config.json
+        # O arquivo capacitor.config.json no repo tem o token __PRICEIQ_FRONTEND_URL__
+        # como placeholder. Aqui ele é substituído pela URL real validada acima.
+        # NUNCA usa o index.html legado: o webDir aponta para www/ que é gerado
+        # no próximo step como shell offline mínimo (não-legado).
+        run: |
+          set -eu
+          if ! grep -q "__PRICEIQ_FRONTEND_URL__" capacitor.config.json; then
+            echo "::error::capacitor.config.json não contém o token __PRICEIQ_FRONTEND_URL__."
+            echo "::error::Restaure o token no repo — não hardcode URLs reais."
+            exit 1
+          fi
+          # Usa | como delimitador do sed para evitar conflito com / da URL.
+          sed -i "s|__PRICEIQ_FRONTEND_URL__|${PRICEIQ_FRONTEND_URL}|g" capacitor.config.json
+          echo "✓ capacitor.config.json apontando para ${PRICEIQ_FRONTEND_URL}"
+          # Confirma que o token sumiu (proteção contra falha silenciosa do sed).
+          if grep -q "__PRICEIQ_FRONTEND_URL__" capacitor.config.json; then
+            echo "::error::Substituição falhou — token ainda presente."
+            exit 1
+          fi
+
+      - name: Prepare offline shell for Capacitor (NÃO usa index.html legado)
+        # O APK abre PRICEIQ_FRONTEND_URL (configurada acima) como WebView remoto.
+        # O www/ é EXIGIDO pelo Capacitor como fallback offline — gravamos aqui
+        # um shell mínimo que NUNCA é o legacy/index.html. Se a Internet falhar
+        # antes da URL remota carregar, o usuário vê apenas "Carregando…".
         run: |
           mkdir -p www
           cat > www/index.html << 'HTML'
@@ -75,6 +130,11 @@ jobs:
             echo "ERRO: shell offline www/index.html não foi gerado"
             ls -la
             ls -la www || true
+            exit 1
+          fi
+          # Sanity: garante que NÃO empacotamos o index.html legado por engano.
+          if grep -q "CAPTURA ASSISTIDA\|captura assistida\|Colar texto\|Colar link" www/index.html; then
+            echo "::error::www/index.html contém vestígio do app legado! Abortando."
             exit 1
           fi
           echo "✓ Shell offline gerado em www/index.html ($(wc -c < www/index.html) bytes)"
