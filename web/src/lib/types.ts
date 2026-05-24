@@ -195,3 +195,12 @@ export interface SearchCreatedResponse {
   searchId: string;
   status: SearchStatus;
 }
+
+// Resposta de GET /api/health
+export interface HealthResponse {
+  ok: boolean;
+  service: string;
+  environment: string;
+  timestamp: string;
+  version: string;
+}

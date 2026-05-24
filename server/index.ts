@@ -16,6 +16,8 @@ import { cacheService } from './services/cacheService.js';
 import { databaseService } from './services/databaseService.js';
 import { closePool } from './db/client.js';
 
+const SERVER_VERSION = '0.1.0';
+
 const app = Fastify({
   logger: {
     level: config.LOG_LEVEL,
@@ -28,23 +30,51 @@ const app = Fastify({
   trustProxy: true,
 });
 
+// ─── CORS ────────────────────────────────────────────────
+// CORS_ORIGIN tem precedência sobre FRONTEND_URL (ambas sem barra final).
+const effectiveCorsOrigin = (config.CORS_ORIGIN || config.FRONTEND_URL).replace(/\/$/, '');
+
+if (config.NODE_ENV === 'production') {
+  if (!effectiveCorsOrigin || effectiveCorsOrigin === '*') {
+    console.error('❌ CORS: FRONTEND_URL / CORS_ORIGIN não configurada em produção.');
+    console.error('   Configure FRONTEND_URL=https://<seu-frontend>.vercel.app no Render.');
+    process.exit(1);
+  }
+  if (/^https?:\/\/localhost/.test(effectiveCorsOrigin)) {
+    console.error('❌ CORS: FRONTEND_URL / CORS_ORIGIN aponta para localhost em produção.');
+    console.error('   Configure FRONTEND_URL=https://<seu-frontend>.vercel.app no Render.');
+    process.exit(1);
+  }
+}
+
+// Em desenvolvimento permite qualquer localhost além da origem configurada.
+const corsOrigins: Array<string | RegExp> =
+  config.NODE_ENV === 'production'
+    ? [effectiveCorsOrigin]
+    : [effectiveCorsOrigin, /^http:\/\/localhost:\d+$/];
+
 await app.register(cors, {
-  origin: config.FRONTEND_URL === '*' ? true : [config.FRONTEND_URL, /^http:\/\/localhost:\d+$/],
+  origin: corsOrigins,
   credentials: true,
 });
 await app.register(sensible);
 
 // ─── Health checks ──────────────────────────────────────
 app.get('/health', async () => ({
-  status: 'ok',
-  ts: new Date().toISOString(),
+  ok: true,
+  service: 'priceiq-server',
+  environment: config.NODE_ENV,
+  timestamp: new Date().toISOString(),
+  version: SERVER_VERSION,
   redis: cacheService.isHealthy(),
 }));
 
 app.get('/api/health', async () => ({
-  status: 'ok',
-  env: config.NODE_ENV,
-  ts: new Date().toISOString(),
+  ok: true,
+  service: 'priceiq-server',
+  environment: config.NODE_ENV,
+  timestamp: new Date().toISOString(),
+  version: SERVER_VERSION,
 }));
 
 app.get('/api/db/health', async () => databaseService.health());

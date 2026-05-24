@@ -7,6 +7,9 @@ const envSchema = z.object({
   LOG_LEVEL: z.string().default('info'),
 
   FRONTEND_URL: z.string().default('http://localhost:5173'),
+  // Alternativa a FRONTEND_URL para CORS. Se definida, tem precedência.
+  // Aceita múltiplas origens separadas por vírgula (ex: https://a.app,https://b.app).
+  CORS_ORIGIN: z.string().default(''),
 
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
   REDIS_URL: z.string().default('redis://localhost:6379'),

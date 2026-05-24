@@ -5,16 +5,24 @@
  * (Next.js rewrite faz proxy).
  */
 import type {
-  ApiError, RatesPayload, Search, SearchCreatedResponse, SearchResult, SearchResultsResponse, Supplier, SupplierInput,
+  ApiError, HealthResponse, RatesPayload, Search, SearchCreatedResponse,
+  SearchResult, SearchResultsResponse, Supplier, SupplierInput,
 } from './types';
 
-const BASE_URL = process.env['NEXT_PUBLIC_API_URL'] || '';
+// Remove barra final para evitar //api//rota quando a URL vem com trailing slash.
+const BASE_URL = (process.env['NEXT_PUBLIC_API_URL'] || '').replace(/\/$/, '');
 
 function buildUrl(path: string): string {
   // No browser, usa caminho relativo (Next rewrite cuida do proxy).
   // No servidor (SSR), precisa de URL absoluta.
   if (typeof window !== 'undefined') return path;
   if (BASE_URL) return `${BASE_URL}${path}`;
+  if (process.env['NODE_ENV'] === 'production') {
+    console.error(
+      '❌ NEXT_PUBLIC_API_URL não está configurada.\n' +
+      '   Defina NEXT_PUBLIC_API_URL=https://<backend>.onrender.com no projeto Vercel.',
+    );
+  }
   return path;
 }
 
@@ -41,6 +49,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
+}
+
+// ─── Health ──────────────────────────────────────────────
+
+export async function getApiHealth(): Promise<HealthResponse> {
+  return request<HealthResponse>('/api/health');
 }
 
 // ─── Suppliers ───────────────────────────────────────────
