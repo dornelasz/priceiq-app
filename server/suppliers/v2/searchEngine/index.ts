@@ -125,3 +125,13 @@ export {
   type ExtractUrlsInput,
   type ExtractUrlsResult,
 } from './discovery/index.js';
+
+// ─── Pipeline: motor próprio executável (Etapa 7) ─────────────────────────
+export {
+  runOwnSearchPipeline,
+  mapFetchStatusToResultStatus,
+  classifyExtractionForDiagnostics,
+  isUsefulExtraction,
+  type RunOwnSearchPipelineInput,
+  type OwnSearchPipelineOutcome,
+} from './pipeline/index.js';
