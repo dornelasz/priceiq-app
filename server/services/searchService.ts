@@ -51,6 +51,7 @@ export interface SearchResult {
   currency: string | null;
   exchange_rate_used: number | null;
   total_brl: number | null;
+  price_brl: number | null;
   product_url: string | null;
   match_score: number | null;
   confidence: number | null;
@@ -94,6 +95,7 @@ interface SearchResultRow {
   currency: string | null;
   exchange_rate_used: string | null;
   total_brl: string | null;
+  price_brl: string | null;
   product_url: string | null;
   match_score: number | null;
   confidence: number | null;
@@ -118,7 +120,7 @@ function parseNum(v: string | null): number | null {
 }
 
 const VALID_STATUSES: ReadonlyArray<ResultStatus> = [
-  'validated', 'cached', 'not_found', 'blocked', 'invalid_link',
+  'validated', 'cached', 'partial', 'not_found', 'blocked', 'invalid_link',
   'price_not_found', 'product_mismatch', 'timeout', 'error',
 ];
 
@@ -132,6 +134,10 @@ function normalizeStatus(row: SearchResultRow): ResultStatus {
   }
   if (!row.error_message && row.total_brl !== null) {
     return row.from_cache ? 'cached' : 'validated';
+  }
+  // Preço validado mas sem total → parcial (frete a confirmar).
+  if (!row.error_message && row.price !== null && row.total_brl === null && row.link_validated) {
+    return 'partial';
   }
   const msg = (row.error_message ?? '').toLowerCase();
   if (/bloqueou|http 403|http 429|http 451|captcha|cloudflare/.test(msg)) return 'blocked';
@@ -170,6 +176,7 @@ function resultToApi(row: SearchResultRow): SearchResult {
     currency: row.currency,
     exchange_rate_used: parseNum(row.exchange_rate_used),
     total_brl: parseNum(row.total_brl),
+    price_brl: parseNum(row.price_brl),
     product_url: row.product_url,
     match_score: row.match_score,
     confidence: row.confidence,
@@ -199,6 +206,7 @@ export interface InsertResultPayload {
   exchangeRateUsed?: number;
   totalPrice?: number;
   totalBrl?: number;
+  priceBrl?: number;
   productUrl?: string;
   matchScore?: number;
   confidence?: number;
@@ -299,26 +307,33 @@ export const searchService = {
   },
 
   async finalizeStatus(searchId: string): Promise<{ status: SearchStatus; best: { supplier: string | null; totalBrl: number | null } }> {
-    // Conta sucessos vs falhas
-    const counts = await query<{ found: number; failed: number }>(
+    // Conta resultados ÚTEIS (completo OU parcial) vs total.
+    // Útil = status validated/cached/partial. Resultado parcial (preço validado
+    // sem frete) NÃO é falha. Linhas legadas sem status caem no heurístico antigo.
+    const counts = await query<{ useful: number; total: number }>(
       `SELECT
-         SUM(CASE WHEN error_message IS NULL AND total_brl IS NOT NULL THEN 1 ELSE 0 END)::int AS found,
-         SUM(CASE WHEN error_message IS NOT NULL OR total_brl IS NULL THEN 1 ELSE 0 END)::int AS failed
+         SUM(CASE
+               WHEN status IN ('validated','cached','partial')
+                 OR (status IS NULL AND error_message IS NULL AND total_brl IS NOT NULL)
+               THEN 1 ELSE 0 END)::int AS useful,
+         COUNT(*)::int AS total
        FROM search_results WHERE search_id = $1`,
       [searchId],
     );
-    const c = counts.rows[0] ?? { found: 0, failed: 0 };
+    const c = counts.rows[0] ?? { useful: 0, total: 0 };
+    const failed = c.total - c.useful;
     const status: SearchStatus =
-      c.found > 0 && c.failed === 0 ? 'completed' :
-      c.found > 0 && c.failed > 0  ? 'partial_failed' :
+      c.useful > 0 && failed === 0 ? 'completed' :
+      c.useful > 0 && failed > 0  ? 'partial_failed' :
       'failed';
 
-    // Calcula best
+    // Calcula best — SOMENTE resultados completos (total final confirmado).
+    // Parciais nunca concorrem a "melhor preço".
     const best = await query<{ supplier_name: string | null; total_brl: string | null }>(
       `SELECT s.name AS supplier_name, sr.total_brl
        FROM search_results sr
        JOIN suppliers s ON s.id = sr.supplier_id
-       WHERE sr.search_id = $1 AND sr.error_message IS NULL AND sr.total_brl IS NOT NULL
+       WHERE sr.search_id = $1 AND sr.status IN ('validated','cached') AND sr.total_brl IS NOT NULL
        ORDER BY sr.total_brl ASC, sr.collected_at DESC
        LIMIT 1`,
       [searchId],
@@ -346,12 +361,12 @@ export const searchService = {
     await query(
       `INSERT INTO search_results
        (search_id, supplier_id, product_name, seller_name, price, freight,
-        total_price, currency, exchange_rate_used, total_brl, product_url,
+        total_price, currency, exchange_rate_used, total_brl, price_brl, product_url,
         match_score, confidence, available, warning, error_message, from_cache,
         link_type, link_validated, evidence_text, source_url, source_name, validation_warning,
         status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
-               $18,$19,$20,$21,$22,$23,$24)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+               $19,$20,$21,$22,$23,$24,$25)`,
       [
         searchId,
         sup.id,
@@ -363,6 +378,7 @@ export const searchService = {
         payload.currency ?? null,
         payload.exchangeRateUsed ?? null,
         payload.totalBrl ?? null,
+        payload.priceBrl ?? null,
         payload.productUrl ?? null,
         payload.matchScore ?? null,
         payload.confidence ?? null,

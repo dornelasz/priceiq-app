@@ -1,11 +1,21 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { deriveWorkerStatus, isSuccessStatus, type ResultStatus } from '../lib/resultStatus.js';
+import {
+  deriveWorkerStatus,
+  isSuccessStatus,
+  isPartialStatus,
+  isUsefulStatus,
+  type ResultStatus,
+} from '../lib/resultStatus.js';
 
 describe('resultStatus — isSuccessStatus', () => {
-  it('considera validated e cached como sucesso', () => {
+  it('considera validated e cached como sucesso completo', () => {
     assert.equal(isSuccessStatus('validated'), true);
     assert.equal(isSuccessStatus('cached'), true);
+  });
+
+  it('partial NÃO é sucesso completo (não concorre a melhor preço)', () => {
+    assert.equal(isSuccessStatus('partial'), false);
   });
 
   it('considera todos os outros como falha', () => {
@@ -16,6 +26,31 @@ describe('resultStatus — isSuccessStatus', () => {
     for (const s of failures) assert.equal(isSuccessStatus(s), false);
     assert.equal(isSuccessStatus(null), false);
     assert.equal(isSuccessStatus(undefined), false);
+  });
+});
+
+describe('resultStatus — isPartialStatus / isUsefulStatus', () => {
+  it('isPartialStatus só é true para partial', () => {
+    assert.equal(isPartialStatus('partial'), true);
+    assert.equal(isPartialStatus('validated'), false);
+    assert.equal(isPartialStatus('cached'), false);
+    assert.equal(isPartialStatus('error'), false);
+    assert.equal(isPartialStatus(null), false);
+  });
+
+  it('isUsefulStatus inclui validated, cached e partial', () => {
+    assert.equal(isUsefulStatus('validated'), true);
+    assert.equal(isUsefulStatus('cached'), true);
+    assert.equal(isUsefulStatus('partial'), true);
+  });
+
+  it('isUsefulStatus exclui falhas reais', () => {
+    const failures: ResultStatus[] = [
+      'not_found', 'blocked', 'invalid_link',
+      'price_not_found', 'product_mismatch', 'timeout', 'error',
+    ];
+    for (const s of failures) assert.equal(isUsefulStatus(s), false);
+    assert.equal(isUsefulStatus(null), false);
   });
 });
 

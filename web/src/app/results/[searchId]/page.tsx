@@ -76,6 +76,7 @@ export default function ResultsPage() {
   }
 
   const { search, progress, results, errors, best } = data;
+  const partials = data.partials ?? [];
   const inProgress = search.status === 'pending' || search.status === 'running';
   const bestPrice = best?.total_brl ?? 0;
 
@@ -165,7 +166,7 @@ export default function ResultsPage() {
         </div>
       )}
 
-      {!inProgress && results.length === 0 && errors.length === 0 && (
+      {!inProgress && results.length === 0 && partials.length === 0 && errors.length === 0 && (
         <div style={{
           textAlign: 'center',
           padding: '60px 20px',
@@ -195,6 +196,32 @@ export default function ResultsPage() {
           />
         );
       })}
+
+      {/* Parciais — preço validado, frete a confirmar. Não concorrem a melhor preço. */}
+      {partials.length > 0 && (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '20px 0 10px' }}>
+            <h3 style={{ color: '#FFB800', fontSize: 14, fontWeight: 800, margin: 0 }}>
+              Parciais · frete a confirmar
+            </h3>
+            <span style={{ color: '#4A5568', fontSize: 12 }}>
+              {partials.length} fornecedor{partials.length !== 1 ? 'es' : ''}
+            </span>
+          </div>
+          <p style={{ color: '#8896AA', fontSize: 12, marginBottom: 10 }}>
+            Preço encontrado e validado, mas o frete não foi confirmado — o total final pode mudar no checkout.
+          </p>
+          {partials.map((r) => (
+            <ResultCard
+              key={r.id}
+              result={r}
+              supplier={suppliers.get(r.supplier_id)}
+              isBest={false}
+              priceDiffPct={null}
+            />
+          ))}
+        </>
+      )}
     </>
   );
 }

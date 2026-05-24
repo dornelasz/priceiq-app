@@ -306,8 +306,15 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
       });
       await doInsertResult(searchId, sup, payload);
 
-      // ─── 6. Cache (só validated com isCacheValid passando) ────────
-      if (v2Result.status === 'validated' && payload.status === 'validated') {
+      // ─── 6. Cache ──────────────────────────────────────────────────
+      // V2 marca status='validated' quando há produto+preço+evidência (frete
+      // agnóstico). O payload persistido pode virar 'validated' (total confirmado)
+      // ou 'partial' (frete a confirmar) — ambos são úteis e cacheáveis. O blob
+      // guarda freightStatus, então o total é re-derivado na leitura do cache.
+      if (
+        v2Result.status === 'validated' &&
+        (payload.status === 'validated' || payload.status === 'partial')
+      ) {
         const toCache = universalToCacheable(v2Result);
         if (isCacheValid(toCache)) {
           void doCacheSet(sup.id, normalizedQuery, toCache).catch((e) =>

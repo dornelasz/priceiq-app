@@ -35,7 +35,8 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
   const isValidatedProduct = linkType === 'product' && r.link_validated;
   const isSearchOnly = linkType === 'search';
   const isCached = r.status === 'cached';
-  const isError = r.status !== 'validated' && r.status !== 'cached';
+  const isPartial = r.status === 'partial';
+  const isError = r.status !== 'validated' && r.status !== 'cached' && r.status !== 'partial';
 
   const cls = `res-card${isBest ? ' best' : ''}`;
 
@@ -57,6 +58,11 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
           {isCached && (
             <span className="tag" style={{ background: 'rgba(74,85,104,.15)', color: '#8896AA', border: '1px solid rgba(74,85,104,.3)' }}>
               📦 Cache
+            </span>
+          )}
+          {isPartial && (
+            <span className="tag" style={{ background: 'rgba(255,184,0,.12)', color: '#FFB800', border: '1px solid rgba(255,184,0,.3)' }}>
+              Frete a confirmar
             </span>
           )}
           {r.available === false && !isError && (
@@ -85,9 +91,18 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
             <p style={{ color: '#00D4FF', fontSize: 13, fontWeight: 600 }}>{supplierName}</p>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            <p style={{ color: isBest ? '#00D4FF' : '#E8F0FE', fontSize: 22, fontWeight: 800, margin: 0 }}>
-              R$ {fmt(r.total_brl ?? 0)}
-            </p>
+            {isPartial ? (
+              <>
+                <p style={{ color: '#FFB800', fontSize: 22, fontWeight: 800, margin: 0 }}>
+                  R$ {fmt(r.price_brl ?? 0)}
+                </p>
+                <p style={{ color: '#FFB800', fontSize: 10, fontWeight: 600 }}>+ frete a confirmar</p>
+              </>
+            ) : (
+              <p style={{ color: isBest ? '#00D4FF' : '#E8F0FE', fontSize: 22, fontWeight: 800, margin: 0 }}>
+                R$ {fmt(r.total_brl ?? 0)}
+              </p>
+            )}
             {r.currency && r.currency !== 'BRL' && r.price !== null && (
               <p style={{ color: '#4A5568', fontSize: 11 }}>{r.currency} {fmt(r.price)}</p>
             )}
@@ -110,7 +125,9 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
             ? <span style={{ color: '#E8F0FE', fontWeight: 700 }}>{r.currency ?? ''} {fmt(r.freight ?? 0)}</span>
             : /frete\s+gr[áa]tis\s+confirmado/i.test(r.warning ?? '')
               ? <span style={{ color: '#00E5A0', fontWeight: 700 }}>Grátis</span>
-              : <span style={{ color: '#FFB800', fontWeight: 700 }}>Não encontrado</span>}
+              : isPartial
+                ? <span style={{ color: '#FFB800', fontWeight: 700 }}>A confirmar</span>
+                : <span style={{ color: '#FFB800', fontWeight: 700 }}>Não encontrado</span>}
         </div>
 
         {/* Vendedor */}
@@ -183,7 +200,12 @@ export default function ResultCard({ result, supplier, isBest, priceDiffPct }: P
             <DetailCell label="Fornecedor" value={supplierName} />
             <DetailCell label="Vendedor" value={r.seller_name ?? '—'} />
             <DetailCell label="Preço original" value={r.currency && r.price ? `${r.currency} ${fmt(r.price)}` : '—'} />
-            <DetailCell label="Total BRL" value={`R$ ${fmt(r.total_brl ?? 0)}`} valueColor="#00D4FF" />
+            <DetailCell label="Preço BRL" value={r.price_brl !== null ? `R$ ${fmt(r.price_brl)}` : '—'} valueColor="#00D4FF" />
+            <DetailCell
+              label="Total BRL"
+              value={isPartial ? 'Indisponível até confirmar frete' : `R$ ${fmt(r.total_brl ?? 0)}`}
+              valueColor={isPartial ? '#FFB800' : '#00D4FF'}
+            />
             {r.currency && r.currency !== 'BRL' && r.exchange_rate_used && (
               <DetailCell label="Cotação usada" value={`${r.currency}/BRL = ${fmt4(r.exchange_rate_used)}`} />
             )}

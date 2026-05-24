@@ -6,11 +6,12 @@
  *  - Mapear `linkType` V2 → `'product'|'search'|'unverified'` legado.
  *  - Aplicar conversão de moeda usando o converter injetado (vem do
  *    searchService, sem tocar em currencyService).
- *  - Aplicar regra de frete:
- *      not_available  → freight=null, totalPrice=null, totalBrl=null
- *      free_confirmed → freight=0, totalPrice=price, totalBrl=brl
- *      confirmed      → freight=valor, totalPrice=price+freight, totalBrl=brl+freight
- *      estimated      → freight=valor (com warning), totalPrice=null
+ *  - Aplicar regra de frete e derivar status completo vs parcial:
+ *      not_available  → freight=null, totalBrl=null, status='partial' (preço útil)
+ *      estimated      → freight=null, totalBrl=null, status='partial' (com warning)
+ *      free_confirmed → freight=0, totalPrice=price, totalBrl=brl, status='validated'
+ *      confirmed      → freight=valor, totalBrl=brl+freight, status='validated'
+ *    price_brl (preço convertido sem frete) é sempre preenchido quando há preço+moeda.
  *
  * Função PURA exceto pela chamada do `convertToBrl` injetado.
  *
@@ -163,10 +164,17 @@ export async function mapUniversalResultToInsertPayload(
   ) {
     const { brl, rate } = await input.convertToBrl(r.price, r.currency);
 
-    // Aplicar regra de frete (3+1 estados) → freight + totalPrice + totalBrl
+    // price_brl = preço (sem frete) convertido. Disponível sempre que houver
+    // preço + moeda — é o que o resultado parcial mostra quando não há total.
+    const priceBrl = parseFloat(brl.toFixed(4));
+
+    // Aplicar regra de frete (3+1 estados) → freight + totalPrice + totalBrl.
+    // totalConfirmed=true só quando o total final é confiável (frete confirmado
+    // ou grátis comprovado). Quando false → resultado é PARCIAL (total_brl null).
     let freight: number | undefined;
     let totalPrice: number | undefined;
     let totalBrl: number | undefined;
+    let totalConfirmed = false;
     let freightWarning: string | undefined;
 
     switch (r.freightStatus) {
@@ -175,6 +183,7 @@ export async function mapUniversalResultToInsertPayload(
         totalPrice = parseFloat(r.price.toFixed(4));
         totalBrl =
           rate > 0 ? parseFloat((totalPrice * rate).toFixed(4)) : brl;
+        totalConfirmed = true;
         break;
       case 'confirmed': {
         const fv =
@@ -186,8 +195,9 @@ export async function mapUniversalResultToInsertPayload(
             rate > 0
               ? parseFloat((totalPrice * rate).toFixed(4))
               : brl + fv;
+          totalConfirmed = true;
         } else {
-          // contrato V2 já reforça > 0 em confirmed; defensivo
+          // contrato V2 já reforça > 0 em confirmed; defensivo → trata como parcial
           freight = undefined;
           totalPrice = undefined;
           totalBrl = undefined;
@@ -209,9 +219,17 @@ export async function mapUniversalResultToInsertPayload(
         freight = undefined;
         totalPrice = undefined;
         totalBrl = undefined;
-        freightWarning = 'frete a confirmar';
+        freightWarning = 'Preço encontrado, frete a confirmar.';
         break;
     }
+
+    // Status final: completo (validated/cached) só com total confirmado;
+    // caso contrário é parcial (preço útil, frete pendente).
+    const finalStatus: ResultStatus = totalConfirmed
+      ? input.fromCache
+        ? 'cached'
+        : 'validated'
+      : 'partial';
 
     const v2Warning = r.warning ?? undefined;
     const warning =
@@ -220,7 +238,7 @@ export async function mapUniversalResultToInsertPayload(
 
     return {
       found: true,
-      status: input.fromCache ? 'cached' : (mapped.status as ResultStatus),
+      status: finalStatus,
       productName: r.productName,
       price: r.price,
       currency: r.currency.toUpperCase(),
@@ -228,6 +246,7 @@ export async function mapUniversalResultToInsertPayload(
       totalPrice,
       exchangeRateUsed: rate > 0 ? rate : undefined,
       totalBrl,
+      priceBrl,
       productUrl: r.productUrl,
       matchScore: typeof r.matchScore === 'number' ? r.matchScore : undefined,
       confidence:

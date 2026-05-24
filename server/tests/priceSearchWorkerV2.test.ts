@@ -227,7 +227,7 @@ function makeDeps(opts: {
 // ─── 1, 7. Recipe certified → V2 validated → persistência completa ─────
 
 describe('worker V2 — fornecedor certified', () => {
-  it('chama runSupplierRecipe e salva validated com produto/preço/moeda/link/evidence', async () => {
+  it('chama runSupplierRecipe e persiste produto/preço/moeda/link/evidence (parcial: frete não confirmado)', async () => {
     const sup = makeSupplier();
     const { deps, harness } = makeDeps({
       recipes: { [sup.id]: makeRecipe() },
@@ -245,7 +245,8 @@ describe('worker V2 — fornecedor certified', () => {
     assert.equal(harness.autoConfigCalls.length, 0);
     assert.equal(harness.inserts.length, 1);
     const p = harness.inserts[0]!.payload;
-    assert.equal(p.status, 'validated');
+    // makeValidatedUniversal() tem freightStatus='not_available' → resultado PARCIAL
+    assert.equal(p.status, 'partial');
     assert.equal(p.found, true);
     assert.equal(p.productName, 'Notebook Dell Inspiron 15 i5');
     assert.equal(p.price, 4599.9);
@@ -286,7 +287,8 @@ describe('worker V2 — sem recipe', () => {
 
     assert.equal(harness.autoConfigCalls.length, 1);
     assert.equal(harness.recipeRunCalls.length, 1);
-    assert.equal(harness.inserts[0]!.payload.status, 'validated');
+    // default not_available → parcial
+    assert.equal(harness.inserts[0]!.payload.status, 'partial');
   });
 
   it('autoConfig retorna certified → runSupplierRecipe roda em seguida', async () => {
@@ -313,7 +315,8 @@ describe('worker V2 — sem recipe', () => {
       deps,
     });
     assert.equal(harness.recipeRunCalls.length, 1);
-    assert.equal(harness.inserts[0]!.payload.status, 'validated');
+    // default not_available → parcial
+    assert.equal(harness.inserts[0]!.payload.status, 'partial');
   });
 });
 
@@ -570,6 +573,9 @@ describe('worker V2 — isolamento de falhas', () => {
         },
         [supB.id]: makeValidatedUniversal({
           productUrl: 'https://b.com/products/x',
+          freight: 0,
+          freightStatus: 'free_confirmed',
+          totalPrice: 4599.9,
           evidence: {
             sourceUrl: 'https://b.com/products/x',
             evidenceText: 'JSON-LD Product · price=4599.9 BRL',
@@ -644,7 +650,7 @@ describe('worker V2 — timeout/error', () => {
 // ─── 15, 16. Frete ─────────────────────────────────────────────────────
 
 describe('worker V2 — frete', () => {
-  it('freightStatus=not_available → freight=undefined, totalPrice=undefined', async () => {
+  it('freightStatus=not_available → status=partial, freight/totalPrice/totalBrl undefined, priceBrl presente', async () => {
     const sup = makeSupplier();
     const r = makeValidatedUniversal({
       freight: null,
@@ -662,10 +668,12 @@ describe('worker V2 — frete', () => {
       deps,
     });
     const p = harness.inserts[0]!.payload;
-    assert.equal(p.status, 'validated');
+    assert.equal(p.status, 'partial');
     assert.equal(p.freight, undefined);
     assert.equal(p.totalPrice, undefined);
     assert.equal(p.totalBrl, undefined);
+    // preço convertido (sem frete) continua disponível
+    assert.equal(p.priceBrl, 4599.9);
     assert.match(p.warning ?? '', /a confirmar/i);
   });
 
@@ -688,10 +696,12 @@ describe('worker V2 — frete', () => {
       deps,
     });
     const p = harness.inserts[0]!.payload;
+    assert.equal(p.status, 'validated');
     assert.equal(p.freight, 0);
     assert.equal(p.totalPrice, 4599.9);
     // BRL → rate=1, totalBrl=4599.9
     assert.equal(p.totalBrl, 4599.9);
+    assert.equal(p.priceBrl, 4599.9);
   });
 
   it('freightStatus=confirmed com freight>0 → totalPrice=price+freight', async () => {
@@ -713,6 +723,7 @@ describe('worker V2 — frete', () => {
       deps,
     });
     const p = harness.inserts[0]!.payload;
+    assert.equal(p.status, 'validated');
     assert.equal(p.freight, 29.9);
     assert.ok(Math.abs((p.totalPrice ?? 0) - 4629.8) < 0.01);
   });
@@ -735,7 +746,9 @@ describe('worker V2 — frete', () => {
       deps,
     });
     const p = harness.inserts[0]!.payload;
+    assert.equal(p.status, 'partial');
     assert.equal(p.totalPrice, undefined);
+    assert.equal(p.totalBrl, undefined);
     assert.match(p.warning ?? '', /estimad/i);
   });
 });
@@ -816,6 +829,9 @@ describe('worker V2 — cache', () => {
       evidenceText: 'JSON-LD Product · price=3000 BRL',
       sourceUrl: 'https://loja.com/p/x',
       sourceName: 'v2_recipe_runner',
+      // resultado completo (frete grátis confirmado) → reusado como 'cached'
+      freightStatus: 'free_confirmed' as const,
+      freight: 0,
       cachedAt: '2026-05-22T11:00:00.000Z',
     };
     const { deps, harness } = makeDeps({
@@ -1015,8 +1031,12 @@ describe('mapV2StatusToLegacy', () => {
 // ─── 19, 20. Escopo V2 ─────────────────────────────────────────────────
 
 describe('escopo V2', () => {
-  it('mapUniversalResultToInsertPayload — validated com price BRL produz payload completo', async () => {
-    const u = makeValidatedUniversal();
+  it('mapUniversalResultToInsertPayload — validated com frete confirmado produz payload completo', async () => {
+    const u = makeValidatedUniversal({
+      freight: 0,
+      freightStatus: 'free_confirmed',
+      totalPrice: 4599.9,
+    });
     const p = await mapUniversalResultToInsertPayload({
       result: u,
       convertToBrl: async (amt, cur) => ({
@@ -1028,6 +1048,8 @@ describe('escopo V2', () => {
     assert.equal(p.status, 'validated');
     assert.equal(p.productName, 'Notebook Dell Inspiron 15 i5');
     assert.equal(p.sourceName, 'v2_recipe_runner');
+    assert.equal(p.totalBrl, 4599.9);
+    assert.equal(p.priceBrl, 4599.9);
   });
 
   it('mapUniversalResultToInsertPayload — V2 validated mas helper falha → invalid_link', async () => {

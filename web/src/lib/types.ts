@@ -110,6 +110,7 @@ export type LinkType = 'product' | 'search' | 'unverified';
 export type ResultStatus =
   | 'validated'
   | 'cached'
+  | 'partial'
   | 'not_found'
   | 'blocked'
   | 'invalid_link'
@@ -131,6 +132,7 @@ export interface SearchResult {
   currency: string | null;
   exchange_rate_used: number | null;
   total_brl: number | null;
+  price_brl: number | null;
   product_url: string | null;
   match_score: number | null;
   confidence: number | null;
@@ -172,6 +174,7 @@ export interface SearchProgress {
   total: number;
   completed: number;
   failed: number;
+  partial: number;
   running: number;
 }
 
@@ -186,6 +189,7 @@ export interface SearchResultsResponse {
   search: Search;
   progress: SearchProgress;
   results: SearchResult[];
+  partials: SearchResult[];
   errors: SearchErrorEntry[];
   best: SearchResult | null;
 }

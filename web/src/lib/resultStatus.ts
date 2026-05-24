@@ -4,9 +4,14 @@ export function isSuccessStatus(s: ResultStatus | null | undefined): boolean {
   return s === 'validated' || s === 'cached';
 }
 
+export function isPartialStatus(s: ResultStatus | null | undefined): boolean {
+  return s === 'partial';
+}
+
 const LABELS: Record<ResultStatus, string> = {
   validated: 'Validado',
   cached: 'Cache',
+  partial: 'Frete a confirmar',
   not_found: 'Produto não encontrado',
   blocked: 'Fornecedor bloqueou leitura',
   invalid_link: 'Link do produto inválido',

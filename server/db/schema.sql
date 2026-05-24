@@ -57,7 +57,8 @@ CREATE TABLE IF NOT EXISTS search_results (
   total_price         NUMERIC(14, 4),       -- price + freight na moeda original
   currency            TEXT,
   exchange_rate_used  NUMERIC(14, 6),
-  total_brl           NUMERIC(14, 4),       -- total_price convertido para BRL
+  total_brl           NUMERIC(14, 4),       -- (price+freight) convertido — só com frete confirmado/grátis
+  price_brl           NUMERIC(14, 4),       -- price convertido (sem frete) — disponível em resultado parcial
   product_url         TEXT,
   match_score         INT,                  -- 0-100 quão exato é o match com a query
   confidence          INT,                  -- 0-100 confiança na extração do preço
@@ -73,8 +74,8 @@ CREATE TABLE IF NOT EXISTS search_results (
   source_url          TEXT,                 -- URL que foi raspada
   source_name         TEXT,                 -- 'jina-direct' | 'gemini-interpreter' | scraper específico
   validation_warning  TEXT,
-  -- Contrato único de status (Etapa 2)
-  status              TEXT                  -- validated|cached|not_found|blocked|invalid_link|price_not_found|product_mismatch|timeout|error
+  -- Contrato único de status (Etapa 2 + partial da Etapa 3)
+  status              TEXT                  -- validated|cached|partial|not_found|blocked|invalid_link|price_not_found|product_mismatch|timeout|error
 );
 
 CREATE INDEX IF NOT EXISTS idx_results_search       ON search_results(search_id);
