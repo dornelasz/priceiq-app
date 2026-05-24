@@ -43,3 +43,43 @@ export {
 };
 export { detectFreeShipping, type FreightHintResult } from './freightHints.js';
 export type { ExtractedProductData } from './types.js';
+
+// ─── Etapa 4 — extractors locais reforçados ────────────────────────────
+export {
+  parseMoney,
+  parseAmount,
+  detectCurrency,
+  type SupportedCurrency,
+} from './moneyParser.js';
+
+export {
+  findPriceCandidates,
+  rankPriceCandidates,
+  pickPrincipalPrice,
+  type PriceCandidate,
+} from './priceCandidates.js';
+
+export {
+  extractFreight,
+  type FreightExtraction,
+  type FreightState,
+} from './freightExtractor.js';
+
+export { detectAvailability, type AvailabilityResult } from './availability.js';
+
+export {
+  classifyUrl,
+  isProductUrl,
+  type LinkClass,
+  type UrlClassification,
+} from './linkClassifier.js';
+
+export {
+  extractFromMarkdown,
+  type MarkdownExtractInput,
+} from './markdownExtractor.js';
+
+export {
+  extractLocalProduct,
+  type LocalExtractionInput,
+} from './localProductExtractor.js';

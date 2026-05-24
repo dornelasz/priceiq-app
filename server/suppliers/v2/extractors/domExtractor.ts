@@ -1,64 +1,34 @@
 /**
- * Extractor de fallback puramente baseado em DOM/regex.
+ * Extractor de fallback baseado em DOM/texto.
  *
- * Usa h1/title como nome do produto e tenta achar preço textual no HTML
- * próximo do nome. Confiança baixa por construção — nunca aceita preço
- * solto sem nome de produto.
+ * Usa h1/title como nome do produto e o ranker de candidatos de preço para
+ * achar o PREÇO PRINCIPAL (descartando parcela/frete/desconto), em vez de
+ * pegar o primeiro número. Confiança baixa por construção — nunca aceita
+ * preço solto sem nome de produto.
  *
  * Função PURA — não toca rede ou DB.
  */
 import type { ExtractedProductData } from './types.js';
-
-const PRICE_PATTERNS: Array<{ rx: RegExp; currency: string }> = [
-  // R$ 1.234,56 / R$ 1234,56 / R$ 99
-  { rx: /R\$\s*([\d.]+,\d{2}|\d+(?:[.,]\d{2})?|\d+)/i, currency: 'BRL' },
-  // US$ 999.99 / US$ 999
-  { rx: /US\$\s*([\d,]+(?:\.\d{2})?)/i, currency: 'USD' },
-  // $ 999.99 — assume USD se não houver R$/US$
-  { rx: /\$\s*([\d,]+(?:\.\d{2})?)/i, currency: 'USD' },
-  // €1.234,56
-  { rx: /€\s*([\d.]+,\d{2}|\d+(?:[.,]\d{2})?|\d+)/i, currency: 'EUR' },
-];
+import { pickPrincipalPrice } from './priceCandidates.js';
 
 function stripTags(s: string): string {
   return s.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-function parseLocalizedNumber(raw: string, currency: string): number | undefined {
-  let s = raw.trim();
-  if (currency === 'BRL' || currency === 'EUR') {
-    // Estilo BR/EU: '.' milhar, ',' decimal
-    if (/,\d{2}$/.test(s)) {
-      s = s.replace(/\./g, '').replace(',', '.');
-    } else {
-      s = s.replace(/\./g, '').replace(',', '.');
-    }
-  } else {
-    // Estilo US: ',' milhar, '.' decimal
-    s = s.replace(/,/g, '');
-  }
-  const n = parseFloat(s);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 function findPriceWithEvidence(
   html: string,
 ): { price: number; currency: string; evidence: string } | null {
   const text = stripTags(html);
-  for (const pat of PRICE_PATTERNS) {
-    const m = text.match(pat.rx);
-    if (m && m[1]) {
-      const price = parseLocalizedNumber(m[1], pat.currency);
-      if (price === undefined) continue;
-      // Captura ±80 chars como evidência
-      const idx = m.index ?? 0;
-      const start = Math.max(0, idx - 60);
-      const end = Math.min(text.length, idx + (m[0]?.length ?? 0) + 60);
-      const evidence = text.slice(start, end).trim();
-      return { price, currency: pat.currency, evidence };
-    }
-  }
-  return null;
+  const best = pickPrincipalPrice(text, { source: 'dom', minConfidence: 1 });
+  if (!best) return null;
+  const idx = text.indexOf(best.rawText);
+  const start = Math.max(0, (idx >= 0 ? idx : 0) - 60);
+  const end = Math.min(text.length, (idx >= 0 ? idx : 0) + best.rawText.length + 60);
+  return {
+    price: best.value,
+    currency: best.currency,
+    evidence: text.slice(start, end).trim(),
+  };
 }
 
 function pickProductName(html: string): string | undefined {

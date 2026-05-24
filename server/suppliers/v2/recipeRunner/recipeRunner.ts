@@ -23,7 +23,6 @@
  *      invalid_link/not_found conforme observado.
  */
 import type {
-  ExtractionStrategy,
   SearchResultStatusV2,
   SupplierRecipe,
   UniversalSearchResult,
@@ -34,20 +33,10 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   type Fetcher,
 } from '../fetching/contentFetcher.js';
-import {
-  EXTRACTORS_IN_ORDER,
-  detectFreeShipping,
-  type ExtractedProductData,
-  type RegisteredExtractor,
-} from '../extractors/index.js';
-import { matchProduct } from '../matching/index.js';
+import { extractLocalProduct } from '../extractors/index.js';
 import { validateRecipe } from './recipeValidator.js';
 import { extractCandidates, type CandidateUrl } from './candidateExtractor.js';
-import {
-  buildStatusResult,
-  buildValidatedResult,
-  buildMismatchResult,
-} from './resultBuilder.js';
+import { buildStatusResult } from './resultBuilder.js';
 
 export interface RunSupplierRecipeInput {
   supplier: Supplier;
@@ -109,39 +98,6 @@ function fetchStatusToResultStatus(
   };
 }
 
-function reorderExtractors(
-  preferred: ExtractionStrategy | null | undefined,
-): RegisteredExtractor[] {
-  if (!preferred) return EXTRACTORS_IN_ORDER;
-  const idx = EXTRACTORS_IN_ORDER.findIndex((e) => e.strategy === preferred);
-  if (idx < 0) return EXTRACTORS_IN_ORDER;
-  const head = EXTRACTORS_IN_ORDER[idx];
-  if (!head) return EXTRACTORS_IN_ORDER;
-  return [head, ...EXTRACTORS_IN_ORDER.filter((_, i) => i !== idx)];
-}
-
-function runExtractors(
-  html: string,
-  candidateUrl: string,
-  preferred: ExtractionStrategy | null | undefined,
-): ExtractedProductData | null {
-  let bestPartial: ExtractedProductData | null = null;
-  for (const ex of reorderExtractors(preferred)) {
-    const got = ex.extract(html, candidateUrl);
-    if (!got) continue;
-    if (
-      got.productName &&
-      typeof got.price === 'number' &&
-      got.price > 0
-    ) {
-      return got; // completo — pode parar
-    }
-    if (!bestPartial || got.confidence > bestPartial.confidence) {
-      bestPartial = got;
-    }
-  }
-  return bestPartial;
-}
 
 export async function runSupplierRecipe(
   input: RunSupplierRecipeInput,
@@ -202,81 +158,31 @@ export async function runSupplierRecipe(
       if (prodRes.status !== 'ok' || !prodRes.html) continue;
       sawCandidateFetched = true;
 
-      const extracted = runExtractors(
-        prodRes.html,
-        prodRes.finalUrl ?? candidate.url,
-        input.recipe.extractionStrategy,
-      );
-      if (!extracted) continue;
-
-      // Sem nome → não há produto identificado
-      if (
-        !extracted.productName ||
-        extracted.productName.trim() === '' ||
-        !extracted.evidenceText
-      ) {
-        continue;
-      }
-      // Sem preço válido → produto sem preço (price_not_found candidato)
-      if (typeof extracted.price !== 'number' || extracted.price <= 0) {
-        sawProductWithoutPrice = true;
-        continue;
-      }
-      // Sem moeda → também é falha de extração
-      if (!extracted.currency || extracted.currency.trim() === '') {
-        sawProductWithoutPrice = true;
-        continue;
-      }
-
       const productUrl = prodRes.finalUrl ?? candidate.url;
+      const localResult = extractLocalProduct({
+        url: productUrl,
+        supplier: input.supplier,
+        query: input.query,
+        html: prodRes.html,
+        preferredStrategy: input.recipe.extractionStrategy,
+        minMatchScore,
+      });
 
-      // ─── 4d. Match score ──────────────────────────────────────────
-      const match = matchProduct(input.query, extracted.productName);
-
-      if (match.isAccessory || match.score < minMatchScore) {
-        const mismatch = buildMismatchResult({
-          productName: extracted.productName,
-          productUrl,
-          matchScore: match.score,
-          reason: match.isAccessory
-            ? 'produto parece acessório, query não pediu acessório'
-            : `match score ${match.score} abaixo do mínimo ${minMatchScore}`,
-        });
-        if (!bestMismatch || match.score > bestMismatch.score) {
-          bestMismatch = { result: mismatch, score: match.score };
+      if (localResult.status === 'validated') {
+        return localResult;
+      }
+      if (localResult.status === 'product_mismatch') {
+        const score = localResult.matchScore ?? 0;
+        if (!bestMismatch || score > bestMismatch.score) {
+          bestMismatch = { result: localResult, score };
         }
         continue;
       }
-
-      // ─── 4f. Frete: só `free_confirmed` quando há evidência clara ─
-      const freightHint = detectFreeShipping(prodRes.html);
-      const freight = freightHint.isFreeShipping
-        ? {
-            state: 'free_confirmed' as const,
-            value: 0,
-            evidence: freightHint.evidence,
-          }
-        : {
-            state: 'not_available' as const,
-            value: null,
-            evidence: null,
-          };
-
-      // ─── Resultado validated ─────────────────────────────────────
-      return buildValidatedResult({
-        productName: extracted.productName,
-        price: extracted.price,
-        currency: extracted.currency.toUpperCase(),
-        productUrl,
-        evidenceText: extracted.evidenceText,
-        sourceUrl: productUrl,
-        strategy: extracted.strategy,
-        matchScore: match.score,
-        confidence: extracted.confidence,
-        available: extracted.available ?? null,
-        image: extracted.image ?? null,
-        freight,
-      });
+      if (localResult.status === 'price_not_found') {
+        sawProductWithoutPrice = true;
+        continue;
+      }
+      // invalid_link, not_found, etc. → continuar para o próximo candidato
     }
 
     // ─── 5+. Nenhum candidato virou validated ─────────────────────────

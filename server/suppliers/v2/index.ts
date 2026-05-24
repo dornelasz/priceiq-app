@@ -88,6 +88,28 @@ export {
   type ExtractedProductData,
   type RegisteredExtractor,
   type ExtractorFn,
+  // Etapa 4
+  parseMoney,
+  parseAmount,
+  detectCurrency,
+  findPriceCandidates,
+  rankPriceCandidates,
+  pickPrincipalPrice,
+  extractFreight,
+  detectAvailability,
+  classifyUrl,
+  isProductUrl,
+  extractFromMarkdown,
+  extractLocalProduct,
+  type SupportedCurrency,
+  type PriceCandidate,
+  type FreightExtraction,
+  type FreightState,
+  type AvailabilityResult,
+  type LinkClass,
+  type UrlClassification,
+  type MarkdownExtractInput,
+  type LocalExtractionInput,
 } from './extractors/index.js';
 
 export { matchProduct, type MatchResult } from './matching/index.js';
