@@ -33,6 +33,12 @@ export const idParamSchema = z.object({
   id: z.string().uuid('id inválido'),
 });
 
+// Rota de diagnóstico do motor próprio (Etapa 8). Apenas a query é exigida.
+export const ownSearchTestSchema = z.object({
+  query: z.string().min(1, 'query é obrigatória').max(300),
+});
+export type OwnSearchTestInput = z.infer<typeof ownSearchTestSchema>;
+
 // ─── Searches ────────────────────────────────────────────
 
 export const searchCreateSchema = z.object({

@@ -4,10 +4,28 @@ import {
   supplierCreateSchema,
   supplierUpdateSchema,
   idParamSchema,
+  ownSearchTestSchema,
 } from '../lib/validators.js';
 import { autoConfigureSupplier } from '../suppliers/v2/autoConfig/index.js';
+import {
+  runOwnSearchPipeline,
+  mapToDiagnosticResponse,
+  type RunOwnSearchPipelineInput,
+  type OwnSearchPipelineOutcome,
+} from '../suppliers/v2/searchEngine/index.js';
 
-export async function suppliersRoutes(fastify: FastifyInstance): Promise<void> {
+export interface SuppliersRoutesOptions {
+  /** Injetável nos testes para evitar rede real. */
+  runOwnSearchPipelineImpl?: (
+    input: RunOwnSearchPipelineInput,
+  ) => Promise<OwnSearchPipelineOutcome>;
+}
+
+export async function suppliersRoutes(
+  fastify: FastifyInstance,
+  opts: SuppliersRoutesOptions = {},
+): Promise<void> {
+  const runPipeline = opts.runOwnSearchPipelineImpl ?? runOwnSearchPipeline;
   // GET /api/suppliers
   fastify.get('/api/suppliers', async () => {
     const items = await supplierService.list();
@@ -48,5 +66,37 @@ export async function suppliersRoutes(fastify: FastifyInstance): Promise<void> {
     const { id } = idParamSchema.parse(req.params);
     const result = await autoConfigureSupplier(id);
     return result;
+  });
+
+  // POST /api/suppliers/:id/test-own-search — diagnóstico do motor próprio (Etapa 8)
+  //
+  // Executa o pipeline próprio (NativeFetcher + localProductExtractor) em
+  // isolamento para um fornecedor e query arbitrários. NÃO salva resultados,
+  // NÃO usa Firecrawl, NÃO usa IA, NÃO altera cotação.
+  // Útil para validar a configuração de busca de um fornecedor antes de
+  // ativá-lo no fluxo principal.
+  fastify.post('/api/suppliers/:id/test-own-search', async (req) => {
+    const { id } = idParamSchema.parse(req.params);
+    const { query } = ownSearchTestSchema.parse(req.body);
+    const supplier = await supplierService.get(id);
+    const outcome = await runPipeline({
+      supplier,
+      recipe: supplier.recipe ?? null,
+      query,
+    });
+    return mapToDiagnosticResponse({ supplierId: id, supplierName: supplier.name, query, outcome });
+  });
+
+  // GET /api/suppliers/:id/test-own-search?query=... — variante GET (conveniência)
+  fastify.get('/api/suppliers/:id/test-own-search', async (req) => {
+    const { id } = idParamSchema.parse(req.params);
+    const { query } = ownSearchTestSchema.parse(req.query);
+    const supplier = await supplierService.get(id);
+    const outcome = await runPipeline({
+      supplier,
+      recipe: supplier.recipe ?? null,
+      query,
+    });
+    return mapToDiagnosticResponse({ supplierId: id, supplierName: supplier.name, query, outcome });
   });
 }

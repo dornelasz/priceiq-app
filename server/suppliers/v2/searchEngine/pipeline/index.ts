@@ -9,6 +9,17 @@ export {
   isUsefulExtraction,
 } from './pipelineResultMapper.js';
 
+export {
+  mapToDiagnosticResponse,
+  deriveDiagnosticStatus,
+  sanitizeAttempts,
+  type DiagnosticStatus,
+  type DiagnosticResultView,
+  type SanitizedAttempt,
+  type DiagnosticResponse,
+  type MapDiagnosticInput,
+} from './diagnosticResponseMapper.js';
+
 export type {
   RunOwnSearchPipelineInput,
   OwnSearchPipelineOutcome,
