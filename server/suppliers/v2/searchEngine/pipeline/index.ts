@@ -17,8 +17,16 @@ export {
   type DiagnosticResultView,
   type SanitizedAttempt,
   type DiagnosticResponse,
+  type DiagnosticProviderView,
   type MapDiagnosticInput,
 } from './diagnosticResponseMapper.js';
+
+export {
+  fetchThroughProviders,
+  canProviderFetch,
+  anyProviderCanFetch,
+  type ProviderChainResult,
+} from './providerChain.js';
 
 export type {
   RunOwnSearchPipelineInput,

@@ -23,6 +23,14 @@ export interface ProviderPolicy {
   requireEvidence: boolean;
   /** Só permite provider externo DEPOIS que o motor próprio falhar. */
   allowExternalOnlyAfterOwnFailure: boolean;
+  /**
+   * Quando true (FIRECRAWL_ENABLED=true), o Firecrawl é tentado ANTES do
+   * NativeFetcher — porque os sites-alvo bloqueiam o fetch direto (Etapa 10).
+   * O NativeFetcher passa a ser fallback. Default false.
+   */
+  preferFirecrawlFirst: boolean;
+  /** Ordem de tentativa dos providers de coleta. Default ['native']. */
+  providerPriority: string[];
 }
 
 /**
@@ -35,6 +43,8 @@ export const DEFAULT_PROVIDER_POLICY: ProviderPolicy = {
   preferOwnEngine: true,
   requireEvidence: true,
   allowExternalOnlyAfterOwnFailure: true,
+  preferFirecrawlFirst: false,
+  providerPriority: ['native'],
 };
 
 /**

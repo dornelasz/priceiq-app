@@ -102,6 +102,10 @@ export interface SanitizedAttempt {
   url?: string;
   detail?: string;
   elapsedMs?: number;
+  httpStatus?: number;
+  usedFallback?: boolean;
+  fallbackReason?: string;
+  linksFromProvider?: number;
   at: string;
 }
 
@@ -114,8 +118,41 @@ export function sanitizeAttempts(attempts: SearchAttempt[]): SanitizedAttempt[] 
     ...(a.url ? { url: a.url } : {}),
     ...(a.detail ? { detail: truncate(a.detail, DETAIL_MAX) ?? undefined } : {}),
     ...(typeof a.elapsedMs === 'number' ? { elapsedMs: a.elapsedMs } : {}),
+    ...(typeof a.httpStatus === 'number' ? { httpStatus: a.httpStatus } : {}),
+    ...(a.usedFallback ? { usedFallback: true } : {}),
+    ...(a.fallbackReason ? { fallbackReason: a.fallbackReason } : {}),
+    ...(typeof a.linksFromProvider === 'number'
+      ? { linksFromProvider: a.linksFromProvider }
+      : {}),
     at: a.at,
   }));
+}
+
+/** Qual provider entregou o conteúdo terminal (último fetch de sucesso)? */
+function deriveProviderUsed(attempts: SearchAttempt[]): string | null {
+  const successSteps = new Set(['search_fetch', 'product_fetch']);
+  let last: string | null = null;
+  for (const a of attempts) {
+    if (
+      successSteps.has(a.step) &&
+      (a.status === 'native_fetch_success' || a.status === 'external_fetch_success') &&
+      a.providerName
+    ) {
+      last = a.providerName;
+    }
+  }
+  return last;
+}
+
+export interface DiagnosticProviderView {
+  /** Ordem de tentativa dos providers (ex: ['firecrawl','native']). */
+  priority: string[];
+  /** Firecrawl estava ligado nesta execução? */
+  firecrawlEnabled: boolean;
+  /** Algum passo caiu para um provider de fallback? */
+  usedFallback: boolean;
+  /** Provider que entregou o conteúdo terminal (null se nenhum). */
+  providerUsed: string | null;
 }
 
 export interface DiagnosticResponse {
@@ -126,6 +163,7 @@ export interface DiagnosticResponse {
   status: DiagnosticStatus;
   errorMessage: string | null;
   result: DiagnosticResultView;
+  provider: DiagnosticProviderView;
   diagnostics: {
     candidateUrls: string[];
     attempts: SanitizedAttempt[];
@@ -157,6 +195,12 @@ export function mapToDiagnosticResponse(
     status: deriveDiagnosticStatus(outcome.result),
     errorMessage: outcome.result.errorMessage ?? null,
     result: toResultView(outcome.result),
+    provider: {
+      priority: outcome.providerPriority ?? [],
+      firecrawlEnabled: outcome.firecrawlEnabled ?? false,
+      usedFallback: outcome.usedFallback ?? false,
+      providerUsed: deriveProviderUsed(outcome.attempts),
+    },
     diagnostics: {
       candidateUrls: outcome.candidateUrls,
       attempts: sanitizeAttempts(outcome.attempts),

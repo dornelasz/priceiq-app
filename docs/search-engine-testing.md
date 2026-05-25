@@ -50,6 +50,14 @@ GET /api/suppliers/<uuid>/test-own-search?query=notebook+dell+inspiron+15
   // null quando não houve erro; mensagem de falha controlada nos demais casos
   "errorMessage": null,
 
+  // Qual coletor entregou o conteúdo (Etapa 11)
+  "provider": {
+    "priority": ["firecrawl", "native"],  // ordem de tentativa
+    "firecrawlEnabled": true,
+    "usedFallback": false,                 // true se caiu para o NativeFetcher
+    "providerUsed": "firecrawl"            // provider do fetch terminal
+  },
+
   "result": {
     "productName": "Notebook Dell Inspiron 15 3000",
     "price": 2799.90,
@@ -136,6 +144,37 @@ GET /api/suppliers/<uuid>/test-own-search?query=notebook+dell+inspiron+15
 
 ---
 
+## Firecrawl como coletor principal (Etapa 11)
+
+Os grandes e-commerces bloqueiam o fetch direto (HTTP 403). Por isso o motor
+próprio pode usar o **Firecrawl** como coletor principal e o **NativeFetcher**
+como fallback. O PriceIQ continua sendo o motor: a extração e validação de
+preço são SEMPRE locais (`localProductExtractor`) — o Firecrawl só entrega
+HTML/markdown/links.
+
+Para ligar (no Render ou em `server/.env`):
+
+```
+FIRECRAWL_ENABLED=true
+FIRECRAWL_API_KEY=fc-<sua-chave>
+# opcionais (têm default):
+FIRECRAWL_API_URL=https://api.firecrawl.dev/v2
+FIRECRAWL_TIMEOUT_MS=60000
+FIRECRAWL_MAX_PAGES_PER_SEARCH=5
+FIRECRAWL_MAX_CREDITS_PER_SEARCH=10
+FETCH_PROVIDER_PRIORITY=firecrawl,native
+```
+
+- Com `FIRECRAWL_ENABLED=false` (default): só o NativeFetcher roda.
+- Com `FIRECRAWL_ENABLED=true` **sem** `FIRECRAWL_API_KEY`: o servidor recusa
+  iniciar com erro claro.
+- O bloco `provider` da resposta mostra a ordem tentada, se houve fallback e
+  qual coletor entregou o conteúdo.
+- Nos `attempts`, um passo servido pelo fallback traz `usedFallback: true` e
+  `fallbackReason` (ex: `firecrawl:no_credits`).
+
+---
+
 ## Observações
 
 - O campo `priceBrl` e `totalBrl` só são preenchidos quando `currency = "BRL"`.
@@ -143,4 +182,4 @@ GET /api/suppliers/<uuid>/test-own-search?query=notebook+dell+inspiron+15
   no fluxo principal, que usa a cotação do dia.
 - `evidenceText` é truncado a 500 caracteres para evitar resposta muito grande.
 - Detalhes nos `attempts` são truncados a 300 caracteres.
-- A chave `FIRECRAWL_API_KEY` nunca aparece em nenhuma resposta desta rota.
+- A chave `FIRECRAWL_API_KEY` nunca aparece em logs, diagnostics ou resposta.

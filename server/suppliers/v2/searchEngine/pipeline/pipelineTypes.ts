@@ -18,8 +18,16 @@ export interface RunOwnSearchPipelineInput {
   searchId?: string;
   providerPolicy?: Partial<ProviderPolicy>;
   budget?: Partial<SearchBudget>;
-  /** FetchProvider injetável (testes). Default: createNativeFetchProvider(). */
+  /**
+   * FetchProvider único injetável (compat Etapa 7 / testes).
+   * Default: createNativeFetchProvider(). Ignorado se `fetchProviders` vier.
+   */
   fetchProvider?: FetchProvider;
+  /**
+   * Cadeia ordenada de providers (Etapa 11). Quando presente, o pipeline tenta
+   * cada um em ordem com fallback. Ex: [firecrawl, native].
+   */
+  fetchProviders?: FetchProvider[];
   /** Limite de candidatos a descobrir (default = budget.maxCandidateUrls). */
   maxCandidates?: number;
   /** Timeout por fetch em ms (repassado ao provider). */
@@ -38,4 +46,10 @@ export interface OwnSearchPipelineOutcome {
   /** Cópia do diagnostics em memória da execução. */
   attempts: SearchAttempt[];
   elapsedMs: number;
+  /** Ordem dos providers de coleta usada nesta execução (ex: ['firecrawl','native']). */
+  providerPriority?: string[];
+  /** Firecrawl estava ligado nesta execução? */
+  firecrawlEnabled?: boolean;
+  /** Algum passo precisou cair para um provider de fallback? */
+  usedFallback?: boolean;
 }

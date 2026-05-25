@@ -28,10 +28,13 @@ export {
 
 export {
   DEFAULT_SEARCH_BUDGET,
+  FIRECRAWL_CREDIT_ESTIMATE_PER_CALL,
   createBudgetUsage,
   resolveBudget,
   hasBudgetRemaining,
   consumeBudget,
+  hasFirecrawlCreditsRemaining,
+  consumeFirecrawlCredits,
   type SearchBudget,
   type BudgetUsage,
   type BudgetBearer,
@@ -90,6 +93,18 @@ export {
 } from './providers/firecrawlProviderStub.js';
 
 export {
+  createFirecrawlProvider,
+  buildFirecrawlScrapePayload,
+  type FirecrawlProviderOptions,
+} from './providers/firecrawlProvider.js';
+
+export {
+  resolveProvidersFromConfig,
+  parseProviderPriority,
+  type ResolvedProviders,
+} from './providers/providerResolver.js';
+
+export {
   createAIProviderStub,
   AI_DISABLED_REASON,
 } from './providers/aiProviderStub.js';
@@ -126,7 +141,7 @@ export {
   type ExtractUrlsResult,
 } from './discovery/index.js';
 
-// ─── Pipeline: motor próprio executável (Etapa 7) ─────────────────────────
+// ─── Pipeline: motor próprio executável (Etapas 7 + 11) ───────────────────
 export {
   runOwnSearchPipeline,
   mapFetchStatusToResultStatus,
@@ -135,11 +150,16 @@ export {
   mapToDiagnosticResponse,
   deriveDiagnosticStatus,
   sanitizeAttempts,
+  fetchThroughProviders,
+  canProviderFetch,
+  anyProviderCanFetch,
   type RunOwnSearchPipelineInput,
   type OwnSearchPipelineOutcome,
   type DiagnosticStatus,
   type DiagnosticResultView,
   type SanitizedAttempt,
   type DiagnosticResponse,
+  type DiagnosticProviderView,
   type MapDiagnosticInput,
+  type ProviderChainResult,
 } from './pipeline/index.js';

@@ -23,6 +23,7 @@ export type BudgetKind =
   | 'extraction'
   | 'nativeFetch'
   | 'externalFetch'
+  | 'firecrawlCall'
   | 'aiCall'
   | 'elapsed';
 
@@ -34,6 +35,10 @@ export interface SearchBudget {
   maxNativeFetches: number;
   /** Fetches por provider externo (Firecrawl). Default 0 nesta etapa. */
   maxExternalFetches: number;
+  /** Chamadas distintas ao Firecrawl. Default 0. */
+  maxFirecrawlCalls: number;
+  /** Créditos Firecrawl estimados por busca (teto de gasto). Default 0. */
+  maxFirecrawlCreditsEstimated: number;
   /** Chamadas de IA. Default 0 nesta etapa. */
   maxAiCalls: number;
 }
@@ -44,8 +49,13 @@ export interface BudgetUsage {
   extractions: number;
   nativeFetches: number;
   externalFetches: number;
+  firecrawlCalls: number;
+  firecrawlCreditsEstimated: number;
   aiCalls: number;
 }
+
+/** Créditos estimados por chamada de scrape Firecrawl (proxy auto + retries). */
+export const FIRECRAWL_CREDIT_ESTIMATE_PER_CALL = 2;
 
 export interface BudgetBearer {
   budget: SearchBudget;
@@ -64,6 +74,8 @@ export const DEFAULT_SEARCH_BUDGET: SearchBudget = {
   maxElapsedMs: 30000,
   maxNativeFetches: 6,
   maxExternalFetches: 0,
+  maxFirecrawlCalls: 0,
+  maxFirecrawlCreditsEstimated: 0,
   maxAiCalls: 0,
 };
 
@@ -75,6 +87,8 @@ export function createBudgetUsage(): BudgetUsage {
     extractions: 0,
     nativeFetches: 0,
     externalFetches: 0,
+    firecrawlCalls: 0,
+    firecrawlCreditsEstimated: 0,
     aiCalls: 0,
   };
 }
@@ -96,6 +110,8 @@ function limitFor(budget: SearchBudget, kind: BudgetKind): number {
       return budget.maxNativeFetches;
     case 'externalFetch':
       return budget.maxExternalFetches;
+    case 'firecrawlCall':
+      return budget.maxFirecrawlCalls;
     case 'aiCall':
       return budget.maxAiCalls;
     case 'elapsed':
@@ -115,6 +131,8 @@ function usageFor(usage: BudgetUsage, kind: BudgetKind): number {
       return usage.nativeFetches;
     case 'externalFetch':
       return usage.externalFetches;
+    case 'firecrawlCall':
+      return usage.firecrawlCalls;
     case 'aiCall':
       return usage.aiCalls;
     case 'elapsed':
@@ -161,9 +179,34 @@ export function consumeBudget(ctx: BudgetBearer, kind: BudgetKind): boolean {
     case 'externalFetch':
       ctx.budgetUsage.externalFetches += 1;
       break;
+    case 'firecrawlCall':
+      ctx.budgetUsage.firecrawlCalls += 1;
+      break;
     case 'aiCall':
       ctx.budgetUsage.aiCalls += 1;
       break;
   }
   return true;
+}
+
+/**
+ * Há orçamento de créditos Firecrawl para mais uma chamada (estimativa)?
+ * Verifica o teto `maxFirecrawlCreditsEstimated` contra o uso acumulado.
+ */
+export function hasFirecrawlCreditsRemaining(
+  ctx: BudgetBearer,
+  estimate = FIRECRAWL_CREDIT_ESTIMATE_PER_CALL,
+): boolean {
+  return (
+    ctx.budgetUsage.firecrawlCreditsEstimated + estimate <=
+    ctx.budget.maxFirecrawlCreditsEstimated
+  );
+}
+
+/** Consome créditos Firecrawl estimados (contador de gasto). */
+export function consumeFirecrawlCredits(
+  ctx: BudgetBearer,
+  estimate = FIRECRAWL_CREDIT_ESTIMATE_PER_CALL,
+): void {
+  ctx.budgetUsage.firecrawlCreditsEstimated += estimate;
 }

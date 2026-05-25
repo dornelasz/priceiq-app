@@ -90,7 +90,12 @@ export function removeTrackingParams(rawUrl: string): string {
   }
 }
 
-export type ExtractedUrlSource = 'href' | 'canonical' | 'og_url' | 'json_script';
+export type ExtractedUrlSource =
+  | 'href'
+  | 'canonical'
+  | 'og_url'
+  | 'json_script'
+  | 'provider_links';
 
 export interface ExtractedUrl {
   url: string;
@@ -103,6 +108,11 @@ export interface ExtractUrlsInput {
   baseUrl: string;
   /** Quando fornecido, descarta URLs de domínio completamente diferente. */
   supplierDomain?: string;
+  /**
+   * Links já descobertos por um provider (ex: Firecrawl formats:["links"]).
+   * Passam pela mesma normalização/filtragem/dedupe dos links do HTML.
+   */
+  extraLinks?: string[];
 }
 
 export interface ExtractUrlsResult {
@@ -128,7 +138,7 @@ function isSameDomain(urlStr: string, supplierDomain: string): boolean {
  * Extrai todos os links válidos do HTML, normalizados e limpos.
  */
 export function extractUrls(input: ExtractUrlsInput): ExtractUrlsResult {
-  const { html, baseUrl, supplierDomain } = input;
+  const { html, baseUrl, supplierDomain, extraLinks } = input;
   const seen = new Set<string>();
   const results: ExtractedUrl[] = [];
   const rejectionReasons: Record<string, number> = {};
@@ -214,6 +224,13 @@ export function extractUrls(input: ExtractUrlsInput): ExtractUrlsResult {
       ) {
         tryAdd(candidate, undefined, 'json_script');
       }
+    }
+  }
+
+  // 5. Links já descobertos por um provider externo (ex: Firecrawl).
+  if (extraLinks) {
+    for (const link of extraLinks) {
+      tryAdd(link, undefined, 'provider_links');
     }
   }
 

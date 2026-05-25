@@ -28,6 +28,10 @@ export function mapFetchStatusToResultStatus(
       return { status: 'timeout', message: errorMessage ?? 'tempo de busca esgotado' };
     case 'not_found':
       return { status: 'not_found', message: errorMessage ?? 'página de busca não encontrada' };
+    case 'rate_limited':
+      return { status: 'error', message: errorMessage ?? 'provider externo atingiu limite de requisições' };
+    case 'no_credits':
+      return { status: 'error', message: errorMessage ?? 'provider externo sem créditos' };
     case 'disabled':
       return { status: 'error', message: errorMessage ?? 'provider de coleta desligado' };
     case 'success':

@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { z } from 'zod';
 
-const envSchema = z.object({
+export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
   LOG_LEVEL: z.string().default('info'),
@@ -51,12 +51,26 @@ const envSchema = z.object({
   // direct_fetch (ex: Amazon BR, Shopee). Nunca hardcode a chave.
   //
   // Para ativar no Render:
+  //   FIRECRAWL_ENABLED=true
   //   FIRECRAWL_API_KEY=fc-<sua-chave>
-  //   FIRECRAWL_MODE=fallback   (ou preferred para Firecrawl primeiro)
   //
-  // Com API key vazia: Firecrawl desativado, só direct_fetch é usado.
+  // Com FIRECRAWL_ENABLED=false: Firecrawl desativado, só o NativeFetcher roda.
   FIRECRAWL_API_KEY: z.string().default(''),
   FIRECRAWL_MODE: z.enum(['preferred', 'fallback']).default('fallback'),
+
+  // Liga o FirecrawlProvider como coletor principal do motor próprio (Etapa 11).
+  // Quando true, FIRECRAWL_API_KEY é obrigatória (validado abaixo).
+  FIRECRAWL_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
+  // Endpoint da API Firecrawl (v2). Override para instância self-hosted.
+  FIRECRAWL_API_URL: z.string().default('https://api.firecrawl.dev/v2'),
+  FIRECRAWL_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
+  FIRECRAWL_MAX_PAGES_PER_SEARCH: z.coerce.number().int().min(1).max(20).default(5),
+  FIRECRAWL_MAX_CREDITS_PER_SEARCH: z.coerce.number().int().min(1).max(100).default(10),
+  // Ordem de prioridade dos providers de coleta (CSV). Default: Firecrawl primeiro.
+  FETCH_PROVIDER_PRIORITY: z.string().default('firecrawl,native'),
 
   // ─── Playwright (último fallback, opcional) ──────────────
   // Desligado por padrão. Para usar:
@@ -72,6 +86,17 @@ const envSchema = z.object({
     .transform((v) => v === 'true' || v === '1' || v === 'yes'),
   PLAYWRIGHT_TIMEOUT_MS: z.coerce.number().int().positive().default(20000),
   MAX_PLAYWRIGHT_PAGES_PER_SEARCH: z.coerce.number().int().min(1).max(5).default(1),
+}).superRefine((data, ctx) => {
+  // Firecrawl ligado SEM chave é erro de configuração explícito.
+  if (data.FIRECRAWL_ENABLED && !data.FIRECRAWL_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['FIRECRAWL_API_KEY'],
+      message:
+        'FIRECRAWL_API_KEY é obrigatória quando FIRECRAWL_ENABLED=true. ' +
+        'Configure a chave (fc-...) ou desligue FIRECRAWL_ENABLED.',
+    });
+  }
 });
 
 const parsed = envSchema.safeParse(process.env);

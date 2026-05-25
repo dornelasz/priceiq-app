@@ -21,6 +21,8 @@ export const SEARCH_ENGINE_INTERNAL_STATUSES = [
   'candidate_not_found',
   'native_fetch_success',
   'native_fetch_failed',
+  'external_fetch_success',
+  'external_fetch_failed',
   'external_provider_disabled',
   'ai_provider_disabled',
   'extracted',
@@ -103,12 +105,14 @@ export function mapInternalStatusToPublicStatus(
     case 'candidate_not_found':
     case 'candidate_found':
     case 'native_fetch_success':
+    case 'external_fetch_success':
     case 'extracted':
     case 'external_provider_disabled':
     case 'ai_provider_disabled':
       // Estados sem produto confirmado e sem crash → "nada encontrado".
       return 'not_found';
     case 'native_fetch_failed':
+    case 'external_fetch_failed':
       return 'error';
     default: {
       const _exhaustive: never = s;

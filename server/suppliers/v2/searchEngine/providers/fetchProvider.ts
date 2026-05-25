@@ -21,6 +21,8 @@ export type FetchProviderStatus =
   | 'blocked'
   | 'timeout'
   | 'not_found'
+  | 'rate_limited'
+  | 'no_credits'
   | 'error'
   | 'disabled';
 
@@ -36,6 +38,8 @@ export interface FetchProviderResult {
   html?: string;
   text?: string;
   markdown?: string;
+  /** Links já descobertos pelo provider (ex: Firecrawl formats:["links"]). */
+  links?: string[];
   httpStatus?: number;
   errorMessage?: string;
   elapsedMs: number;

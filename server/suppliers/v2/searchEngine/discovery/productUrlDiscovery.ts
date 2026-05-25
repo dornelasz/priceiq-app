@@ -39,6 +39,7 @@ export function discoverProductUrls(
     query,
     searchPageHtml,
     searchPageUrl,
+    extraLinks,
     maxCandidates = DEFAULT_MAX_CANDIDATES,
   } = input;
 
@@ -59,12 +60,13 @@ export function discoverProductUrls(
     }),
   );
 
-  // ── 2. Sem HTML → não há o que extrair ────────────────────────────────
-  if (!searchPageHtml) {
+  // ── 2. Sem HTML e sem links de provider → não há o que extrair ─────────
+  if (!searchPageHtml && (!extraLinks || extraLinks.length === 0)) {
     const diagnostics: DiscoveryDiagnostics = {
       searchUrl,
       linksExtracted: 0,
       linksRejected: 0,
+      linksFromProvider: 0,
       rejectionReasons: {},
       topCandidates: [],
     };
@@ -73,24 +75,26 @@ export function discoverProductUrls(
       makeSearchAttempt({
         step: 'extract_urls',
         status: 'candidate_not_found',
-        detail: 'sem HTML fornecido; integração com NativeFetcher é etapa futura',
+        detail: 'sem HTML nem links de provider para extrair candidatos',
       }),
     );
 
     return { status: 'no_candidates', searchUrl, candidates: [], diagnostics, attempts };
   }
 
-  // ── 3. Extrair links do HTML ───────────────────────────────────────────
+  // ── 3. Extrair links do HTML (+ links do provider, ex: Firecrawl) ──────
   const effectiveBase = searchPageUrl ?? searchUrl;
   const supplierDomain = getSupplierDomain(supplier);
 
   const { urls: extracted, rejectionReasons } = extractUrls({
-    html: searchPageHtml,
+    html: searchPageHtml ?? '',
     baseUrl: effectiveBase,
     supplierDomain,
+    extraLinks,
   });
 
   const linksExtracted = extracted.length;
+  const linksFromProvider = extracted.filter((u) => u.source === 'provider_links').length;
   const linksRejected = Object.values(rejectionReasons).reduce((a, b) => a + b, 0);
 
   attempts.push(
@@ -116,6 +120,7 @@ export function discoverProductUrls(
     searchUrl,
     linksExtracted,
     linksRejected,
+    linksFromProvider,
     rejectionReasons,
     topCandidates: candidates
       .slice(0, 5)

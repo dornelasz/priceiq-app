@@ -18,6 +18,14 @@ export interface SearchAttempt {
   url?: string;
   detail?: string;
   elapsedMs?: number;
+  /** Status HTTP observado (do provider ou do destino). */
+  httpStatus?: number;
+  /** Este passo foi servido por um provider de fallback? */
+  usedFallback?: boolean;
+  /** Por que caiu para fallback (ex: 'firecrawl:no_credits'). */
+  fallbackReason?: string;
+  /** Quantidade de links que o provider trouxe (ex: Firecrawl). */
+  linksFromProvider?: number;
   /** ISO timestamp do registro. */
   at: string;
 }
@@ -29,6 +37,10 @@ export interface MakeSearchAttemptInput {
   url?: string;
   detail?: string;
   elapsedMs?: number;
+  httpStatus?: number;
+  usedFallback?: boolean;
+  fallbackReason?: string;
+  linksFromProvider?: number;
 }
 
 /** Cria um SearchAttempt carimbado com o instante atual. */
@@ -40,6 +52,10 @@ export function makeSearchAttempt(input: MakeSearchAttemptInput): SearchAttempt 
     url: input.url,
     detail: input.detail,
     elapsedMs: input.elapsedMs,
+    httpStatus: input.httpStatus,
+    usedFallback: input.usedFallback,
+    fallbackReason: input.fallbackReason,
+    linksFromProvider: input.linksFromProvider,
     at: new Date().toISOString(),
   };
 }

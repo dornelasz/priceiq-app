@@ -30,6 +30,8 @@ export interface DiscoveryDiagnostics {
   searchUrl: string | null;
   linksExtracted: number;
   linksRejected: number;
+  /** Quantos links vieram de um provider externo (ex: Firecrawl). */
+  linksFromProvider: number;
   rejectionReasons: Record<string, number>;
   topCandidates: Pick<RankedCandidate, 'url' | 'score' | 'linkClass'>[];
 }
@@ -42,6 +44,8 @@ export interface DiscoverProductUrlsInput {
   searchPageHtml?: string;
   /** URL que originou o HTML (para resolver hrefs relativos). */
   searchPageUrl?: string;
+  /** Links já descobertos por um provider (ex: Firecrawl formats:["links"]). */
+  extraLinks?: string[];
   maxCandidates?: number;
 }
 
