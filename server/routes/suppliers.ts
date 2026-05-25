@@ -5,21 +5,32 @@ import {
   supplierUpdateSchema,
   idParamSchema,
   ownSearchTestSchema,
+  discoverCatalogSchema,
 } from '../lib/validators.js';
 import { autoConfigureSupplier } from '../suppliers/v2/autoConfig/index.js';
 import {
   runOwnSearchPipeline,
   mapToDiagnosticResponse,
   resolveProvidersFromConfig,
+  sanitizeAttempts,
   type RunOwnSearchPipelineInput,
   type OwnSearchPipelineOutcome,
 } from '../suppliers/v2/searchEngine/index.js';
+import {
+  runCatalogDiscovery,
+  type CatalogDiscoveryInput,
+  type CatalogDiscoveryResult,
+} from '../suppliers/v2/searchEngine/catalogDiscovery/index.js';
 
 export interface SuppliersRoutesOptions {
   /** Injetável nos testes para evitar rede real. */
   runOwnSearchPipelineImpl?: (
     input: RunOwnSearchPipelineInput,
   ) => Promise<OwnSearchPipelineOutcome>;
+  /** Injetável nos testes para evitar rede real (Etapa 15). */
+  runCatalogDiscoveryImpl?: (
+    input: CatalogDiscoveryInput,
+  ) => Promise<CatalogDiscoveryResult>;
 }
 
 export async function suppliersRoutes(
@@ -27,6 +38,9 @@ export async function suppliersRoutes(
   opts: SuppliersRoutesOptions = {},
 ): Promise<void> {
   const runPipeline = opts.runOwnSearchPipelineImpl ?? runOwnSearchPipeline;
+  const runCatalog =
+    opts.runCatalogDiscoveryImpl ??
+    ((input: CatalogDiscoveryInput) => runCatalogDiscovery(input));
   // GET /api/suppliers
   fastify.get('/api/suppliers', async () => {
     const items = await supplierService.list();
@@ -107,5 +121,39 @@ export async function suppliersRoutes(
     const { id } = idParamSchema.parse(req.params);
     const { query } = ownSearchTestSchema.parse(req.query);
     return runDiagnostic(id, query);
+  });
+
+  // POST /api/suppliers/:id/discover-catalog — discovery de catálogo (Etapa 15)
+  //
+  // Roda runCatalogDiscovery para popular o Supplier Product Catalog usando
+  // Firecrawl Search/Map, Sitemap e a busca própria. Salva candidatos e
+  // registra discovery_runs. NÃO extrai preço, NÃO usa IA/Gemini. A resposta é
+  // um resumo sanitizado — sem HTML bruto e sem a FIRECRAWL_API_KEY.
+  fastify.post('/api/suppliers/:id/discover-catalog', async (req) => {
+    const { id } = idParamSchema.parse(req.params);
+    const { query, sources, maxCandidates } = discoverCatalogSchema.parse(req.body);
+    const supplier = await supplierService.get(id);
+    const result = await runCatalog({
+      supplier,
+      recipe: supplier.recipe ?? null,
+      query,
+      sources,
+      maxCandidates,
+    });
+    return {
+      ok: true,
+      supplierId: result.supplierId,
+      supplierName: supplier.name,
+      query: result.query,
+      normalizedQuery: result.normalizedQuery,
+      reusableMatches: result.reusableMatches,
+      candidatesFound: result.candidatesFound,
+      candidatesSaved: result.candidatesSaved,
+      candidatesRejected: result.candidatesRejected,
+      sourceBreakdown: result.sourceBreakdown,
+      discoveryRunIds: result.discoveryRunIds,
+      errors: result.errors,
+      attempts: sanitizeAttempts(result.attempts),
+    };
   });
 }

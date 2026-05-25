@@ -33,6 +33,7 @@ export {
   truncateEvidenceText,
   createSupplierProductCatalogService,
   supplierProductCatalogService,
+  type SupplierProductCatalogService,
 } from './supplierProductCatalogService.js';
 
 export { mapRankedCandidatesToCatalog } from './candidateMapper.js';

@@ -416,6 +416,14 @@ export function createSupplierProductCatalogService(queryFn: QueryFn = defaultQu
 }
 
 /**
+ * Tipo da API pública do serviço — usado para injeção/mock em código que o
+ * consome (ex: catalogDiscovery).
+ */
+export type SupplierProductCatalogService = ReturnType<
+  typeof createSupplierProductCatalogService
+>;
+
+/**
  * Instância singleton com a queryFn real do banco.
  * Importar direto quando não há necessidade de injeção.
  */

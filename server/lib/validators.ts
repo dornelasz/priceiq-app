@@ -39,6 +39,18 @@ export const ownSearchTestSchema = z.object({
 });
 export type OwnSearchTestInput = z.infer<typeof ownSearchTestSchema>;
 
+// Rota de discovery de catálogo (Etapa 15). Roda as fontes de descoberta para
+// popular o Supplier Product Catalog. Não extrai preço nem usa IA.
+export const discoverCatalogSchema = z.object({
+  query: z.string().min(1, 'query é obrigatória').max(300),
+  sources: z
+    .array(z.enum(['firecrawl_search', 'firecrawl_map', 'sitemap', 'search_page']))
+    .min(1)
+    .optional(),
+  maxCandidates: z.coerce.number().int().min(1).max(100).optional(),
+});
+export type DiscoverCatalogInput = z.infer<typeof discoverCatalogSchema>;
+
 // ─── Searches ────────────────────────────────────────────
 
 export const searchCreateSchema = z.object({
