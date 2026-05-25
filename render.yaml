@@ -1,0 +1,49 @@
+# Render Blueprint — backend PriceIQ (Fastify).
+#
+# Uso OPCIONAL: no Render, "New +" → "Blueprint" apontando para este repo cria
+# o Web Service automaticamente. Em deploy MANUAL (New + → Web Service) este
+# arquivo é ignorado, então ele não quebra nada — os comandos abaixo são os
+# mesmos que você digitaria na mão.
+#
+# NÃO contém secrets. DATABASE_URL, FRONTEND_URL, CORS_ORIGIN, REDIS_URL e
+# FIRECRAWL_API_KEY usam `sync: false` → o Render pede o valor no dashboard e
+# nunca o grava neste arquivo/repo.
+#
+# Importante: o build usa `--include=dev` porque, com NODE_ENV=production, o
+# `npm install` puro omite devDependencies (typescript/tsx) e o build/migração
+# falhariam.
+services:
+  - type: web
+    name: priceiq-server
+    runtime: node
+    rootDir: server
+    plan: free # ajuste conforme necessário (free hiberna após inatividade)
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm run db:migrate && npm run start
+    healthCheckPath: /api/health
+    autoDeploy: false
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Postgres (Neon, com ?sslmode=require). Secret → preenchido no dashboard.
+      - key: DATABASE_URL
+        sync: false
+      # URL pública do frontend (Vercel), sem barra final.
+      - key: FRONTEND_URL
+        sync: false
+      # Opcional: origens CSV; tem precedência sobre FRONTEND_URL.
+      - key: CORS_ORIGIN
+        sync: false
+      # Cache opcional; ausente → cai para memória.
+      - key: REDIS_URL
+        sync: false
+      # ─── Firecrawl (opcional, DESLIGADO por padrão) ───
+      - key: FIRECRAWL_ENABLED
+        value: "false"
+      # Só necessária quando FIRECRAWL_ENABLED=true. Secret → dashboard.
+      - key: FIRECRAWL_API_KEY
+        sync: false
+      - key: FIRECRAWL_API_URL
+        value: https://api.firecrawl.dev/v2
+      - key: FETCH_PROVIDER_PRIORITY
+        value: firecrawl,native
