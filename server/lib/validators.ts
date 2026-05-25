@@ -51,6 +51,16 @@ export const discoverCatalogSchema = z.object({
 });
 export type DiscoverCatalogInput = z.infer<typeof discoverCatalogSchema>;
 
+// Rota de processamento de catálogo (Etapa 16). Raspa candidatos já salvos e
+// cria matches. Não extrai cotação nem usa IA.
+export const processCatalogSchema = z.object({
+  query: z.string().min(1, 'query é obrigatória').max(300),
+  maxCandidates: z.coerce.number().int().min(1).max(50).optional(),
+  minMatchScore: z.coerce.number().int().min(0).max(100).optional(),
+  candidateIds: z.array(z.string().uuid()).optional(),
+});
+export type ProcessCatalogInput = z.infer<typeof processCatalogSchema>;
+
 // ─── Searches ────────────────────────────────────────────
 
 export const searchCreateSchema = z.object({

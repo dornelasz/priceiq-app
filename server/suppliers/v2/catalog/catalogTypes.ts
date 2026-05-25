@@ -127,6 +127,8 @@ export interface UpdateCandidateExtractionInput {
   freight?: number | null;
   freightStatus?: string | null;
   totalBrl?: number | null;
+  /** Score de match da extração. null preserva o valor atual (COALESCE). */
+  matchScore?: number | null;
   confidence?: number | null;
   evidenceText?: string | null;
   priceEvidenceText?: string | null;

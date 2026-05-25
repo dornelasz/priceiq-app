@@ -299,9 +299,10 @@ export function createSupplierProductCatalogService(queryFn: QueryFn = defaultQu
         confidence          = $11,
         evidence_text       = $12,
         price_evidence_text = $13,
+        match_score         = COALESCE($14, match_score),
         last_checked_at     = NOW(),
         updated_at          = NOW()
-      WHERE id = $14
+      WHERE id = $15
       RETURNING *
     `;
     const res = await queryFn(sql, [
@@ -318,6 +319,7 @@ export function createSupplierProductCatalogService(queryFn: QueryFn = defaultQu
       input.confidence ?? null,
       truncateEvidenceText(input.evidenceText),
       truncateEvidenceText(input.priceEvidenceText),
+      input.matchScore ?? null,
       input.candidateId,
     ]);
     return candidateRowToApi(res.rows[0] as CandidateRow);

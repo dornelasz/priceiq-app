@@ -6,6 +6,7 @@ import {
   idParamSchema,
   ownSearchTestSchema,
   discoverCatalogSchema,
+  processCatalogSchema,
 } from '../lib/validators.js';
 import { autoConfigureSupplier } from '../suppliers/v2/autoConfig/index.js';
 import {
@@ -21,6 +22,11 @@ import {
   type CatalogDiscoveryInput,
   type CatalogDiscoveryResult,
 } from '../suppliers/v2/searchEngine/catalogDiscovery/index.js';
+import {
+  processCatalogCandidates,
+  type CatalogProcessingInput,
+  type CatalogProcessingResult,
+} from '../suppliers/v2/searchEngine/catalogProcessing/index.js';
 
 export interface SuppliersRoutesOptions {
   /** Injetável nos testes para evitar rede real. */
@@ -31,6 +37,10 @@ export interface SuppliersRoutesOptions {
   runCatalogDiscoveryImpl?: (
     input: CatalogDiscoveryInput,
   ) => Promise<CatalogDiscoveryResult>;
+  /** Injetável nos testes para evitar rede real (Etapa 16). */
+  processCatalogCandidatesImpl?: (
+    input: CatalogProcessingInput,
+  ) => Promise<CatalogProcessingResult>;
 }
 
 export async function suppliersRoutes(
@@ -41,6 +51,9 @@ export async function suppliersRoutes(
   const runCatalog =
     opts.runCatalogDiscoveryImpl ??
     ((input: CatalogDiscoveryInput) => runCatalogDiscovery(input));
+  const runProcess =
+    opts.processCatalogCandidatesImpl ??
+    ((input: CatalogProcessingInput) => processCatalogCandidates(input));
   // GET /api/suppliers
   fastify.get('/api/suppliers', async () => {
     const items = await supplierService.list();
@@ -153,6 +166,44 @@ export async function suppliersRoutes(
       sourceBreakdown: result.sourceBreakdown,
       discoveryRunIds: result.discoveryRunIds,
       errors: result.errors,
+      attempts: sanitizeAttempts(result.attempts),
+    };
+  });
+
+  // POST /api/suppliers/:id/process-catalog — processa candidatos (Etapa 16)
+  //
+  // Raspa as product_urls dos candidatos já salvos, extrai com o
+  // localProductExtractor, valida o match e grava supplier_product_matches.
+  // NÃO cria search normal, NÃO salva SearchResult, NÃO mexe na cotação,
+  // NÃO usa IA/Gemini. Resposta é resumo sanitizado — sem HTML bruto e sem a
+  // FIRECRAWL_API_KEY.
+  fastify.post('/api/suppliers/:id/process-catalog', async (req) => {
+    const { id } = idParamSchema.parse(req.params);
+    const { query, maxCandidates, minMatchScore, candidateIds } =
+      processCatalogSchema.parse(req.body);
+    const supplier = await supplierService.get(id);
+    const result = await runProcess({
+      supplier,
+      query,
+      maxCandidates,
+      minMatchScore,
+      candidateIds,
+    });
+    return {
+      ok: true,
+      supplierId: result.supplierId,
+      supplierName: supplier.name,
+      query: result.query,
+      normalizedQuery: result.normalizedQuery,
+      status: result.status,
+      candidatesProcessed: result.candidatesProcessed,
+      candidatesUpdated: result.candidatesUpdated,
+      matchesCreated: result.matchesCreated,
+      matchesRejected: result.matchesRejected,
+      statusBreakdown: result.statusBreakdown,
+      processed: result.processed,
+      errors: result.errors,
+      recommendation: result.recommendation,
       attempts: sanitizeAttempts(result.attempts),
     };
   });

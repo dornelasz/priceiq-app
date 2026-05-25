@@ -277,6 +277,51 @@ describe('listCandidatesByQuery', () => {
   });
 });
 
+// ─── updateCandidateExtraction (Etapa 16: match_score via COALESCE) ───────────
+
+describe('updateCandidateExtraction', () => {
+  it('emite UPDATE com match_score COALESCE e passa o matchScore', async () => {
+    const row = makeCandidateRow({ status: 'validated', match_score: '90' });
+    const { queryFn, calls } = makeMockQuery([row]);
+    const svc = createSupplierProductCatalogService(queryFn);
+
+    await svc.updateCandidateExtraction({
+      candidateId: 'cand-uuid-1',
+      status: 'validated',
+      productName: 'SSD 1TB NVMe',
+      price: 499.9,
+      currency: 'BRL',
+      priceBrl: 499.9,
+      freight: null,
+      freightStatus: 'not_available',
+      matchScore: 90,
+      confidence: 80,
+      evidenceText: 'R$ 499,90',
+    });
+
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0]!.sql.includes('match_score'));
+    assert.ok(calls[0]!.sql.includes('COALESCE'));
+    assert.ok(calls[0]!.sql.includes('last_checked_at'));
+    // matchScore (90) deve estar entre os params
+    assert.ok(calls[0]!.params.includes(90));
+  });
+
+  it('matchScore ausente → passa null (preserva valor atual via COALESCE)', async () => {
+    const row = makeCandidateRow({ status: 'blocked' });
+    const { queryFn, calls } = makeMockQuery([row]);
+    const svc = createSupplierProductCatalogService(queryFn);
+
+    await svc.updateCandidateExtraction({ candidateId: 'cand-uuid-1', status: 'blocked' });
+
+    assert.equal(calls.length, 1);
+    // penúltimo param é matchScore (null), último é candidateId
+    const params = calls[0]!.params;
+    assert.equal(params[params.length - 2], null);
+    assert.equal(params[params.length - 1], 'cand-uuid-1');
+  });
+});
+
 // ─── createOrUpdateMatch ──────────────────────────────────────────────────────
 
 describe('createOrUpdateMatch', () => {
