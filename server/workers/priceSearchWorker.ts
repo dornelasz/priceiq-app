@@ -33,7 +33,15 @@ import { matchingService } from '../services/matchingService.js';
 import type { ResultStatus } from '../lib/resultStatus.js';
 import { autoConfigureSupplier, type AutoConfigOptions } from '../suppliers/v2/autoConfig/index.js';
 import { runSupplierRecipe } from '../suppliers/v2/recipeRunner/index.js';
-import { mapUniversalResultToInsertPayload } from '../suppliers/v2/integration/index.js';
+import {
+  mapUniversalResultToInsertPayload,
+  mapCatalogSearchResultToPayload,
+} from '../suppliers/v2/integration/index.js';
+import {
+  runCatalogFirstSupplierSearch,
+  type CatalogSearchInput,
+  type CatalogSearchResult,
+} from '../suppliers/v2/searchEngine/catalogSearch/index.js';
 import { createFetcherForConfig } from '../suppliers/v2/fetching/index.js';
 import type {
   SupplierRecipe,
@@ -65,6 +73,10 @@ export interface WorkerDeps {
   convertToBrl?: typeof searchService.convertToBrl;
   cacheGet?: <T>(supplierId: string, key: string) => Promise<T | null>;
   cacheSet?: (supplierId: string, key: string, value: unknown) => Promise<void>;
+  /** Etapa 18 — busca catalog-first (injetável nos testes, sem rede/DB). */
+  runCatalogSearch?: (input: CatalogSearchInput) => Promise<CatalogSearchResult>;
+  /** Override do config.CATALOG_SEARCH_ENABLED (testes). */
+  catalogSearchEnabled?: boolean;
 }
 
 interface CachedResult {
@@ -210,6 +222,11 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
     (<T>(id: string, k: string) => cacheService.getSupplierResult<T>(id, k));
   const doCacheSet =
     deps.cacheSet ?? ((id, k, v) => cacheService.setSupplierResult(id, k, v));
+  const catalogSearchEnabled =
+    deps.catalogSearchEnabled ?? config.CATALOG_SEARCH_ENABLED;
+  const doCatalogSearch =
+    deps.runCatalogSearch ??
+    ((input: CatalogSearchInput) => runCatalogFirstSupplierSearch(input));
 
   if (suppliers.length === 0) {
     await doFinalize(searchId);
@@ -288,7 +305,61 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
         route = 'recipe';
       }
 
-      // ─── 4. Executa recipe ─────────────────────────────────────────
+      // ─── 3.5 Catalog-first (estratégia preferencial — Etapa 18) ────
+      // Reutiliza matches confirmados + catálogo antes de raspar do zero.
+      // Fallback SEGURO: falha técnica (status='failed' ou exception) cai no
+      // fluxo de recipe abaixo. Firecrawl só roda se FIRECRAWL_ENABLED=true
+      // (pela cadeia já existente). NUNCA usa IA/Gemini.
+      if (catalogSearchEnabled) {
+        let catalogResult: CatalogSearchResult | null = null;
+        try {
+          catalogResult = await doCatalogSearch({
+            supplier: sup,
+            query,
+            recipe: recipe!,
+            minMatchScore: config.MIN_MATCH_SCORE,
+          });
+        } catch (e) {
+          console.warn(
+            `[worker] ${sup.name} | catalog-first exception → fallback recipe: ${(e as Error).message}`,
+          );
+          catalogResult = null;
+        }
+
+        if (catalogResult) {
+          const mapped = await mapCatalogSearchResultToPayload(catalogResult, {
+            convertToBrl: doConvert,
+          });
+          if (!mapped.fallback && mapped.payload) {
+            route = `catalog_first:${catalogResult.strategy ?? 'none'}`;
+            await doInsertResult(searchId, sup, mapped.payload);
+
+            // Cache: mesmo gate do fluxo de recipe (validated/partial úteis).
+            if (
+              mapped.universal &&
+              (mapped.payload.status === 'validated' ||
+                mapped.payload.status === 'partial')
+            ) {
+              const toCache = universalToCacheable(mapped.universal);
+              if (isCacheValid(toCache)) {
+                void doCacheSet(sup.id, normalizedQuery, toCache).catch((e) =>
+                  console.warn('[worker] cache set falhou', e),
+                );
+              }
+            }
+
+            console.log(
+              `[worker] ${sup.name} | route: ${route} | status: ${mapped.payload.status} | useful: ${catalogResult.usefulResults.length} | reused: ${catalogResult.reusedMatchesCount} | elapsed: ${Date.now() - t0}ms`,
+            );
+            return;
+          }
+          console.warn(
+            `[worker] ${sup.name} | catalog-first status=${catalogResult.status} → fallback recipe`,
+          );
+        }
+      }
+
+      // ─── 4. Executa recipe (fallback) ──────────────────────────────
       const v2Result: UniversalSearchResult = await doRunRecipe({
         supplier: sup,
         recipe: recipe!,

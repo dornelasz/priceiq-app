@@ -8,3 +8,10 @@ export {
   type MapInput,
   type StatusMapping,
 } from './workerAdapter.js';
+
+export {
+  mapCatalogSearchResultToPayload,
+  pickBestUseful,
+  pickRepresentativeFailure,
+  type CatalogPayloadOutcome,
+} from './catalogSearchWorkerAdapter.js';

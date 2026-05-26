@@ -220,6 +220,9 @@ function makeDeps(opts: {
       harness.cacheSetCalls.push({ supplierId: id, key, value });
       cacheStore.set(`${id}::${key}`, value);
     }) as WorkerDeps['cacheSet'],
+    // Estes testes exercitam o fluxo de recipe (Fase E). Catalog-first é
+    // testado separadamente em catalogSearchWorker.test.ts.
+    catalogSearchEnabled: false,
   };
   return { deps, harness };
 }

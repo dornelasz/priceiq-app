@@ -139,6 +139,8 @@ function makeDeps(partial: Partial<WorkerDeps> = {}): WorkerDeps {
     convertToBrl: async (_amount, _currency) => ({ brl: _amount, rate: 1 }),
     cacheGet: async () => null,
     cacheSet: async () => {},
+    // Foca no fluxo de recipe/Firecrawl; catalog-first tem testes próprios.
+    catalogSearchEnabled: false,
     ...partial,
   };
 }

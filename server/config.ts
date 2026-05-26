@@ -46,6 +46,14 @@ export const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true' || v === '1' || v === 'yes'),
 
+  // Estratégia catalog-first no worker (Etapa 18). Quando ligada, a busca
+  // reutiliza matches confirmados e o catálogo antes de raspar do zero, com
+  // fallback seguro ao fluxo de recipe em falha técnica. Default ligado.
+  CATALOG_SEARCH_ENABLED: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
+
   // ─── Firecrawl (provider de coleta, opcional) ───────────
   // Integra ao V2 como provider de busca e produto em sites que bloqueiam
   // direct_fetch (ex: Amazon BR, Shopee). Nunca hardcode a chave.
