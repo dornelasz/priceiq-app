@@ -1,5 +1,9 @@
 # Deploy: Fly.io — backend PriceIQ (server/)
 
+> **Nota:** o alvo de deploy **oficial** é o **Render** — veja
+> [`docs/deploy-render-backend.md`](./deploy-render-backend.md). Este guia de
+> Fly.io fica como alternativa e não é usado no deploy oficial.
+
 Guia de deploy do backend Fastify no Fly.io. **Nenhum secret fica aqui** —
 todos os valores sensíveis são configurados via `fly secrets set`.
 

@@ -1,4 +1,7 @@
-# Render Blueprint — backend PriceIQ (Fastify).
+# Render Blueprint — backend oficial do PriceIQ (Fastify).
+#
+# Stack oficial: Render (backend) + Supabase Postgres (banco) + Vercel (frontend)
+# + Firecrawl (coletor, via backend Render).
 #
 # Uso OPCIONAL: no Render, "New +" → "Blueprint" apontando para este repo cria
 # o Web Service automaticamente. Em deploy MANUAL (New + → Web Service) este
@@ -12,12 +15,16 @@
 # Importante: o build usa `--include=dev` porque, com NODE_ENV=production, o
 # `npm install` puro omite devDependencies (typescript/tsx) e o build/migração
 # falhariam.
+#
+# Migrações: no plano Free, rodam no startCommand (idempotentes — só aplicam o
+# que falta). Em planos pagos (Starter+) você pode mover para um Pre-deploy
+# Command separado (`npm run db:migrate`) e deixar startCommand = `npm run start`.
 services:
   - type: web
     name: priceiq-server
     runtime: node
     rootDir: server
-    plan: free # ajuste conforme necessário (free hiberna após inatividade)
+    plan: free # Free hiberna após inatividade. Pre-deploy command exige Starter+.
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm run db:migrate && npm run start
     healthCheckPath: /api/health
@@ -25,7 +32,16 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      # Postgres (Neon, com ?sslmode=require). Secret → preenchido no dashboard.
+      # Render injeta PORT (default 10000); declarado aqui para deixar explícito.
+      - key: PORT
+        value: "10000"
+      # Prefere IPv4 na resolução DNS — evita falhas de conexão ao pooler Supabase.
+      - key: NODE_OPTIONS
+        value: --dns-result-order=ipv4first
+      # Estratégia catalog-first ligada (Etapa 18).
+      - key: CATALOG_SEARCH_ENABLED
+        value: "true"
+      # Postgres do Supabase (Pooler, porta 6543). Secret → preenchido no dashboard.
       - key: DATABASE_URL
         sync: false
       # URL pública do frontend (Vercel), sem barra final.
@@ -37,10 +53,10 @@ services:
       # Cache opcional; ausente → cai para memória.
       - key: REDIS_URL
         sync: false
-      # ─── Firecrawl (opcional, DESLIGADO por padrão) ───
+      # ─── Firecrawl (LIGADO na stack oficial) ───
       - key: FIRECRAWL_ENABLED
-        value: "false"
-      # Só necessária quando FIRECRAWL_ENABLED=true. Secret → dashboard.
+        value: "true"
+      # Obrigatória com FIRECRAWL_ENABLED=true. Secret → dashboard (fc-...).
       - key: FIRECRAWL_API_KEY
         sync: false
       - key: FIRECRAWL_API_URL

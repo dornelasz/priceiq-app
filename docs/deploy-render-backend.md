@@ -1,12 +1,15 @@
-# Deploy do backend (`server/`) no Render
+# Deploy do backend (`server/`) no Render — **alvo oficial**
 
-Guia para colocar a API Fastify do PriceIQ no Render — incluindo a rota de
-diagnóstico do motor próprio (`/api/suppliers/:id/test-own-search`) e o
-Firecrawl opcional. **Nenhum secret vai para o GitHub**: as chaves ficam só no
-dashboard do Render.
+Guia para colocar a API Fastify do PriceIQ no Render. **Nenhum secret vai para o
+GitHub**: as chaves ficam só no dashboard do Render.
 
-> Esta etapa NÃO conecta o motor ao worker real, NÃO mexe no frontend, NÃO toca
-> na cotação. É só preparar o backend para subir.
+> **Stack oficial:** Render (backend) · Supabase Postgres (banco) · Vercel
+> (frontend) · Firecrawl (coletor, via backend Render) · GitHub (código/deploy).
+> Os arquivos de Fly.io/Railway no repo são alternativas e **não** são o deploy
+> oficial.
+
+> Esta etapa NÃO toca na cotação (Investing.com) e NÃO implementa
+> Gemini/IA/Jina/Playwright/Puppeteer. É só preparar o backend para subir.
 
 ---
 
@@ -19,7 +22,10 @@ Há dois caminhos equivalentes:
 2. **Root Directory:** `server`
 3. **Runtime:** Node
 4. **Build Command:** `npm install --include=dev && npm run build`
-5. **Start Command:** `npm run db:migrate && npm run start`
+5. **Pre-deploy Command** (planos pagos): `npm run db:migrate`
+   **Start Command:** `npm run start`
+   No **plano Free** (sem pre-deploy): deixe a migração no start →
+   **Start Command:** `npm run db:migrate && npm run start`
 6. **Health Check Path:** `/api/health`
 7. Defina as variáveis de ambiente (seção 3) e crie.
 
@@ -45,36 +51,46 @@ devDependencies), o build falharia. `--include=dev` garante que estejam presente
 |---|---|
 | Root Directory | `server` |
 | Build Command | `npm install --include=dev && npm run build` |
-| Start Command | `npm run db:migrate && npm run start` |
+| Pre-deploy Command (Starter+) | `npm run db:migrate` |
+| Start Command (Starter+) | `npm run start` |
+| Start Command (Free) | `npm run db:migrate && npm run start` |
 | Health Check Path | `/api/health` |
 | Node | `>=20` (definido em `server/package.json` → `engines`) |
 
 - `npm run build` → `tsc` compila para `server/dist/`.
 - `npm run start` → `node dist/index.js` (roda a versão buildada).
-- `npm run db:migrate` → aplica as migrations antes de subir (idempotente).
+- `npm run db:migrate` → aplica as migrations (idempotente: só aplica o que
+  falta, rastreado em `_migrations`). Rodar de novo é seguro.
+
+> **Pre-deploy vs Free:** o **Pre-deploy Command** do Render exige instância paga
+> (Starter+) e roda a migração **uma vez** antes de a nova versão subir. No
+> **plano Free** não há pre-deploy, então a migração vai no start command e roda
+> a cada restart — sem problema, pois é idempotente. O `render.yaml` deste repo
+> usa a forma Free (start combinado).
 
 ---
 
 ## 3. Variáveis de ambiente
 
 ### Obrigatórias em produção
-| Variável | Exemplo | Observação |
+| Variável | Exemplo / Valor | Observação |
 |---|---|---|
 | `NODE_ENV` | `production` | Ativa as checagens de CORS de produção. |
-| `DATABASE_URL` | `postgresql://user:pass@ep-xxx.neon.tech/priceiq?sslmode=require` | Postgres (Neon). **Secret.** |
-| `FRONTEND_URL` | `https://priceiq.vercel.app` | URL da Vercel, **sem barra final**. Sem ela (ou apontando para localhost) o servidor recusa subir em produção. |
-
-> `PORT` é injetada pelo Render — **não** defina.
+| `PORT` | `10000` | Porta padrão do Render. Render injeta automaticamente; manter `10000` é consistente. |
+| `NODE_OPTIONS` | `--dns-result-order=ipv4first` | Prefere IPv4 no DNS — evita falhas de conexão ao pooler do Supabase. |
+| `DATABASE_URL` | `postgresql://postgres.<ref>:<senha>@aws-0-sa-east-1.pooler.supabase.com:6543/postgres` | Postgres do **Supabase** (Pooler, porta 6543). **Secret.** |
+| `FRONTEND_URL` | `https://priceiq-app-one.vercel.app` | URL da Vercel, **sem barra final**. Sem ela (ou apontando para localhost) o servidor recusa subir em produção. |
+| `CATALOG_SEARCH_ENABLED` | `true` | Liga a busca catalog-first no worker. |
+| `FIRECRAWL_ENABLED` | `true` | Liga o Firecrawl como coletor principal (stack oficial). |
+| `FIRECRAWL_API_KEY` | `fc-…` | **Obrigatória** com `FIRECRAWL_ENABLED=true` (senão o boot falha com erro claro). **Secret.** |
+| `FIRECRAWL_API_URL` | `https://api.firecrawl.dev/v2` | Endpoint da API Firecrawl. |
+| `FETCH_PROVIDER_PRIORITY` | `firecrawl,native` | Ordem dos coletores. |
 
 ### Opcionais
 | Variável | Padrão | Observação |
 |---|---|---|
-| `CORS_ORIGIN` | `''` | Origens CSV; se definida, tem precedência sobre `FRONTEND_URL`. |
+| `CORS_ORIGIN` | `''` | Origens CSV; se definida, tem precedência sobre `FRONTEND_URL`. Use a URL exata da Vercel. |
 | `REDIS_URL` | — | Cache. Ausente/inacessível → cai para cache em memória. |
-| `FIRECRAWL_ENABLED` | `false` | Liga o Firecrawl como coletor principal do motor próprio. |
-| `FIRECRAWL_API_KEY` | `''` | **Obrigatória SE** `FIRECRAWL_ENABLED=true` (senão o boot falha com erro claro). **Secret.** |
-| `FIRECRAWL_API_URL` | `https://api.firecrawl.dev/v2` | Override só para self-hosted. |
-| `FETCH_PROVIDER_PRIORITY` | `firecrawl,native` | Ordem dos coletores. |
 | `FIRECRAWL_TIMEOUT_MS` | `60000` | Timeout por scrape. |
 | `FIRECRAWL_MAX_PAGES_PER_SEARCH` | `5` | Teto de páginas Firecrawl por busca. |
 | `FIRECRAWL_MAX_CREDITS_PER_SEARCH` | `10` | Teto de créditos estimados por busca. |
@@ -82,6 +98,9 @@ devDependencies), o build falharia. `--include=dev` garante que estejam presente
 > A `FIRECRAWL_API_KEY` é usada **somente** no header `Authorization` do
 > FirecrawlProvider. Ela nunca aparece em logs, no diagnostics ou na resposta da
 > API. **Nunca** a coloque em arquivos do repositório — só no dashboard do Render.
+
+> A `DATABASE_URL` do Supabase: dashboard → **Project Settings → Database →
+> Connection string → URI** (use a string do **Pooler**, porta 6543).
 
 ---
 
@@ -128,13 +147,17 @@ em [`docs/search-engine-testing.md`](./search-engine-testing.md).
 
 - [ ] **Backend sobe** — deploy fica *Live* sem erro no log.
 - [ ] **`/api/health` responde** `{ ok: true, environment: "production" }`.
-- [ ] **Banco conecta** — `/api/db/health` OK e o `db:migrate` rodou sem erro.
+- [ ] **Banco conecta** — `/api/db/health` OK e o `db:migrate` rodou sem erro
+      contra o **Supabase**.
 - [ ] **CORS permite a Vercel** — `FRONTEND_URL` (ou `CORS_ORIGIN`) = URL exata
       do frontend, sem barra final; chamadas do browser não dão erro de CORS.
+- [ ] **Firecrawl ligado com chave** — `FIRECRAWL_ENABLED=true` +
+      `FIRECRAWL_API_KEY=fc-…`; o boot sobe e `provider.firecrawlEnabled=true`.
 - [ ] **Firecrawl só com chave** — com `FIRECRAWL_ENABLED=true` e **sem**
       `FIRECRAWL_API_KEY`, o boot falha com mensagem clara (comportamento esperado).
-- [ ] **`test-own-search` não vaza chave** — a resposta não contém a
-      `FIRECRAWL_API_KEY` nem HTML bruto.
+- [ ] **Catalog ligado** — `CATALOG_SEARCH_ENABLED=true`; rotas de leitura
+      (`/api/suppliers/:id/catalog/...`) respondem.
+- [ ] **Não vaza chave** — respostas não contêm `FIRECRAWL_API_KEY` nem HTML bruto.
 - [ ] **Cotação intacta** — `/api/rates` continua respondendo via Investing.com,
       sem alteração.
 - [ ] **Sem secrets no GitHub** — nenhuma chave/DSN commitada; tudo no dashboard.
