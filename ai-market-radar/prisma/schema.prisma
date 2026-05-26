@@ -1,0 +1,167 @@
+// AI Market Radar — Prisma schema
+// Postgres. Run: `npm run prisma:migrate` (dev) or `npm run prisma:deploy` (prod).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SourceType {
+  RSS
+  BLOG
+  SITE
+  PAPER
+  GITHUB
+  PRODUCT_LAUNCH
+  OTHER
+}
+
+enum ArticleStatus {
+  PENDING_ANALYSIS
+  ANALYZED
+  ERROR
+  DUPLICATE
+}
+
+enum Relevance {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ArticleType {
+  NEWS
+  LAUNCH
+  RESEARCH
+  TOOL
+  INVESTMENT
+  REGULATION
+  PRODUCT_UPDATE
+  TREND
+  OPINION
+}
+
+enum FetchStatus {
+  RUNNING
+  SUCCESS
+  PARTIAL
+  ERROR
+}
+
+model User {
+  id           String   @id @default(cuid())
+  name         String?
+  email        String   @unique
+  passwordHash String?
+  createdAt    DateTime @default(now())
+
+  alerts Alert[]
+}
+
+model Source {
+  id                   String     @id @default(cuid())
+  name                 String
+  url                  String     @unique
+  type                 SourceType @default(RSS)
+  category             String?
+  isActive             Boolean    @default(true)
+  fetchIntervalMinutes Int        @default(60)
+  lastFetchedAt        DateTime?
+  lastError            String?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
+
+  articles  Article[]
+  fetchLogs FetchLog[]
+
+  @@index([isActive])
+}
+
+model Article {
+  id           String        @id @default(cuid())
+  sourceId     String
+  source       Source        @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  title        String
+  url          String
+  canonicalUrl String        @unique
+  author       String?
+  publishedAt  DateTime?
+  collectedAt  DateTime      @default(now())
+  rawExcerpt   String?
+  rawContent   String?       @db.Text
+  contentHash  String
+  language     String?
+  localScore   Int           @default(0)
+  status       ArticleStatus @default(PENDING_ANALYSIS)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  analysis ArticleAnalysis?
+
+  @@index([sourceId])
+  @@index([contentHash])
+  @@index([publishedAt])
+  @@index([status])
+}
+
+model ArticleAnalysis {
+  id           String      @id @default(cuid())
+  articleId    String      @unique
+  article      Article     @relation(fields: [articleId], references: [id], onDelete: Cascade)
+  summary      String      @db.Text
+  impact       String      @db.Text
+  category     String
+  relevance    Relevance   @default(MEDIUM)
+  articleType  ArticleType @default(NEWS)
+  companies    String[]
+  technologies String[]
+  keywords     String[]
+  aiModel      String
+  createdAt    DateTime    @default(now())
+}
+
+model Alert {
+  id           String    @id @default(cuid())
+  userId       String?
+  user         User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  name         String
+  keyword      String?
+  company      String?
+  category     String?
+  minRelevance Relevance @default(LOW)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+
+  @@index([isActive])
+}
+
+model DailyDigest {
+  id          String   @id @default(cuid())
+  date        DateTime @unique @db.Date
+  title       String
+  summary     String   @db.Text
+  topArticles Json
+  trends      Json
+  companies   Json
+  createdAt   DateTime @default(now())
+}
+
+model FetchLog {
+  id              String      @id @default(cuid())
+  sourceId        String
+  source          Source      @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  status          FetchStatus @default(RUNNING)
+  message         String?
+  startedAt       DateTime    @default(now())
+  finishedAt      DateTime?
+  articlesFound   Int         @default(0)
+  articlesCreated Int         @default(0)
+
+  @@index([sourceId])
+  @@index([startedAt])
+}

@@ -1,0 +1,20 @@
+# AI Market Radar (local overrides; root .gitignore covers most)
+node_modules/
+.next/
+out/
+dist/
+build/
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Prisma generated client (regenerated via `prisma generate`)
+prisma/generated/
+
+# Test / cache
+coverage/
+*.tsbuildinfo
+.eslintcache
