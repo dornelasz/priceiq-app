@@ -7,6 +7,7 @@
 import type {
   ApiError, HealthResponse, RatesPayload, Search, SearchCreatedResponse,
   SearchResult, SearchResultsResponse, Supplier, SupplierInput,
+  CatalogCandidatesResponse, CatalogMatchesResponse, CatalogDiscoveryRunsResponse,
 } from './types';
 
 // Remove barra final para evitar //api//rota quando a URL vem com trailing slash.
@@ -88,6 +89,23 @@ export const searchesApi = {
 
 // Re-export para conveniência de quem só precisa do tipo SearchResult
 export type { SearchResult };
+
+// ─── Catalog (leitura, Etapa 19A) ────────────────────────────────────────────
+
+export const catalogApi = {
+  candidates: (supplierId: string, query: string) =>
+    request<CatalogCandidatesResponse>(
+      `/api/suppliers/${supplierId}/catalog/candidates?query=${encodeURIComponent(query)}`,
+    ),
+  matches: (supplierId: string, query: string) =>
+    request<CatalogMatchesResponse>(
+      `/api/suppliers/${supplierId}/catalog/matches?query=${encodeURIComponent(query)}`,
+    ),
+  discoveryRuns: (supplierId: string, query: string) =>
+    request<CatalogDiscoveryRunsResponse>(
+      `/api/suppliers/${supplierId}/catalog/discovery-runs?query=${encodeURIComponent(query)}`,
+    ),
+};
 
 // ─── Rates ───────────────────────────────────────────────
 

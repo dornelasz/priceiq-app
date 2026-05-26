@@ -72,6 +72,12 @@ export const catalogSearchSchema = z.object({
 });
 export type CatalogSearchSchemaInput = z.infer<typeof catalogSearchSchema>;
 
+// Rotas de leitura do catálogo (Etapa 19A). Somente leitura — sem scraping.
+export const catalogReadQuerySchema = z.object({
+  query: z.string().min(1, 'query é obrigatória').max(300),
+});
+export type CatalogReadQueryInput = z.infer<typeof catalogReadQuerySchema>;
+
 // ─── Searches ────────────────────────────────────────────
 
 export const searchCreateSchema = z.object({

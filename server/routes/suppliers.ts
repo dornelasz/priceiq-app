@@ -8,7 +8,13 @@ import {
   discoverCatalogSchema,
   processCatalogSchema,
   catalogSearchSchema,
+  catalogReadQuerySchema,
 } from '../lib/validators.js';
+import {
+  supplierProductCatalogService,
+  normalizeCatalogQuery,
+  type SupplierProductCatalogService,
+} from '../suppliers/v2/catalog/index.js';
 import { autoConfigureSupplier } from '../suppliers/v2/autoConfig/index.js';
 import {
   runOwnSearchPipeline,
@@ -51,6 +57,8 @@ export interface SuppliersRoutesOptions {
   runCatalogSearchImpl?: (
     input: CatalogSearchInput,
   ) => Promise<CatalogSearchResult>;
+  /** Injetável nos testes — catalog service (Etapa 19A). */
+  catalogServiceImpl?: SupplierProductCatalogService;
 }
 
 export async function suppliersRoutes(
@@ -67,6 +75,8 @@ export async function suppliersRoutes(
   const runCatalogSearch =
     opts.runCatalogSearchImpl ??
     ((input: CatalogSearchInput) => runCatalogFirstSupplierSearch(input));
+  const catalogSvc = opts.catalogServiceImpl ?? supplierProductCatalogService;
+
   // GET /api/suppliers
   fastify.get('/api/suppliers', async () => {
     const items = await supplierService.list();
@@ -267,5 +277,45 @@ export async function suppliersRoutes(
       errors: result.errors,
       attempts: sanitizeAttempts(result.attempts),
     };
+  });
+
+  // GET /api/suppliers/:id/catalog/candidates?query=<required>
+  //
+  // Leitura somente — devolve candidatos armazenados para (supplierId, query).
+  // Não dispara scraping, Firecrawl nem discovery. Normaliza a query antes da
+  // consulta para garantir correspondência com os registros salvos.
+  fastify.get('/api/suppliers/:id/catalog/candidates', async (req) => {
+    const { id } = idParamSchema.parse(req.params);
+    const { query } = catalogReadQuerySchema.parse(req.query);
+    await supplierService.get(id);
+    const normalizedQuery = normalizeCatalogQuery(query);
+    const candidates = await catalogSvc.listCandidatesByQuery(id, normalizedQuery);
+    return { ok: true, supplierId: id, query, normalizedQuery, count: candidates.length, candidates };
+  });
+
+  // GET /api/suppliers/:id/catalog/matches?query=<required>
+  //
+  // Leitura somente — devolve todos os matches (qualquer match_status) para
+  // (supplierId, query). Útil para diagnóstico de reuse vs. discovery.
+  fastify.get('/api/suppliers/:id/catalog/matches', async (req) => {
+    const { id } = idParamSchema.parse(req.params);
+    const { query } = catalogReadQuerySchema.parse(req.query);
+    await supplierService.get(id);
+    const normalizedQuery = normalizeCatalogQuery(query);
+    const matches = await catalogSvc.listMatchesByQuery(id, normalizedQuery);
+    return { ok: true, supplierId: id, query, normalizedQuery, count: matches.length, matches };
+  });
+
+  // GET /api/suppliers/:id/catalog/discovery-runs?query=<required>
+  //
+  // Leitura somente — devolve o histórico de execuções de discovery para
+  // (supplierId, query), ordenado por started_at DESC.
+  fastify.get('/api/suppliers/:id/catalog/discovery-runs', async (req) => {
+    const { id } = idParamSchema.parse(req.params);
+    const { query } = catalogReadQuerySchema.parse(req.query);
+    await supplierService.get(id);
+    const normalizedQuery = normalizeCatalogQuery(query);
+    const runs = await catalogSvc.listDiscoveryRunsByQuery(id, normalizedQuery);
+    return { ok: true, supplierId: id, query, normalizedQuery, count: runs.length, runs };
   });
 }

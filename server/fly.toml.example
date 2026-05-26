@@ -1,0 +1,45 @@
+# Fly.io config para o backend PriceIQ (server/).
+#
+# Uso:
+#   cp fly.toml.example fly.toml
+#   fly launch --no-deploy   (ou edite o nome do app abaixo)
+#   fly secrets set DATABASE_URL=... FIRECRAWL_API_KEY=... FRONTEND_URL=...
+#   fly deploy
+#
+# NÃO commitar fly.toml com o app name real se o repo for público — o nome
+# do app expõe o subdomínio. Este .example fica no repo; o fly.toml real
+# fica no .gitignore.
+
+app = "priceiq-server"       # substitua pelo nome real no fly.io
+primary_region = "gru"       # São Paulo
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https   = true
+  auto_stop_machines  = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval     = "30s"
+    method       = "GET"
+    path         = "/api/health"
+    timeout      = "5s"
+
+[[vm]]
+  memory   = "512mb"
+  cpu_kind = "shared"
+  cpus     = 1
+
+# Secrets (nunca colocar valores reais aqui — usar fly secrets set):
+#   fly secrets set NODE_ENV=production
+#   fly secrets set DATABASE_URL="postgresql://..."
+#   fly secrets set FRONTEND_URL="https://priceiq-app-one.vercel.app"
+#   fly secrets set CORS_ORIGIN="https://priceiq-app-one.vercel.app"
+#   fly secrets set FIRECRAWL_ENABLED=true
+#   fly secrets set FIRECRAWL_API_KEY="fc-..."
+#   fly secrets set CATALOG_SEARCH_ENABLED=true

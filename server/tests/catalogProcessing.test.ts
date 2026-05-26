@@ -165,6 +165,12 @@ function makeFakeCatalog(candidates: SupplierProductCandidate[]): {
     async listReusableMatches() {
       return [];
     },
+    async listMatchesByQuery() {
+      return [];
+    },
+    async listDiscoveryRunsByQuery() {
+      return [];
+    },
     async updateCandidateExtraction(input) {
       calls.updates.push(input);
       return { id: input.candidateId } as never;

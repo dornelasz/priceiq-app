@@ -373,6 +373,40 @@ export function createSupplierProductCatalogService(queryFn: QueryFn = defaultQu
   }
 
   /**
+   * Lista todos os matches de um fornecedor para uma query normalizada.
+   * Retorna ordenado por match_score DESC para facilitar diagnóstico.
+   */
+  async function listMatchesByQuery(
+    supplierId: string,
+    normalizedQuery: string,
+  ): Promise<SupplierProductMatch[]> {
+    const sql = `
+      SELECT * FROM supplier_product_matches
+      WHERE supplier_id = $1 AND normalized_query = $2
+      ORDER BY match_score DESC NULLS LAST, created_at DESC
+    `;
+    const res = await queryFn(sql, [supplierId, normalizedQuery]);
+    return (res.rows as MatchRow[]).map(matchRowToApi);
+  }
+
+  /**
+   * Lista execuções de discovery de um fornecedor para uma query normalizada.
+   * Retorna ordenado por started_at DESC (mais recente primeiro).
+   */
+  async function listDiscoveryRunsByQuery(
+    supplierId: string,
+    normalizedQuery: string,
+  ): Promise<SupplierDiscoveryRun[]> {
+    const sql = `
+      SELECT * FROM supplier_discovery_runs
+      WHERE supplier_id = $1 AND normalized_query = $2
+      ORDER BY started_at DESC
+    `;
+    const res = await queryFn(sql, [supplierId, normalizedQuery]);
+    return (res.rows as RunRow[]).map(runRowToApi);
+  }
+
+  /**
    * Cria ou atualiza o match entre uma query e um candidato.
    * Conflito em (supplier_id, candidate_id, normalized_query) → atualiza.
    * Idempotente: confirmar um match já confirmado não altera dados.
@@ -410,6 +444,8 @@ export function createSupplierProductCatalogService(queryFn: QueryFn = defaultQu
     upsertCandidate,
     listCandidatesByQuery,
     listReusableMatches,
+    listMatchesByQuery,
+    listDiscoveryRunsByQuery,
     updateCandidateExtraction,
     createDiscoveryRun,
     finishDiscoveryRun,

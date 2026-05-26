@@ -197,6 +197,8 @@ function makeCatalogService(opts: {
     upsertCandidate: async () => makeCandidate(),
     listCandidatesByQuery: async () => opts.candidates ?? [],
     listReusableMatches: async () => opts.matches ?? [],
+    listMatchesByQuery: async () => [],
+    listDiscoveryRunsByQuery: async () => [],
     updateCandidateExtraction: async () => makeCandidate(),
     createDiscoveryRun: async () => ({
       id: 'run-id',

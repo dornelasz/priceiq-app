@@ -128,6 +128,12 @@ function makeFakeCatalog(reusableCount = 0): {
       calls.reusableQueried += 1;
       return Array.from({ length: reusableCount }, (_, i) => ({ id: `m-${i}` })) as never;
     },
+    async listMatchesByQuery() {
+      return [];
+    },
+    async listDiscoveryRunsByQuery() {
+      return [];
+    },
     async updateCandidateExtraction() {
       return {} as never;
     },

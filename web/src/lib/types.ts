@@ -152,6 +152,102 @@ export interface SearchResult {
   status: ResultStatus;
 }
 
+// ─── Catálogo de produtos por fornecedor (Etapa 19A — leitura) ───────────────
+
+export type CandidateStatus =
+  | 'candidate' | 'extracted' | 'matched' | 'rejected' | 'blocked'
+  | 'price_not_found' | 'product_mismatch' | 'validated' | 'partial';
+
+export type SupplierProductSource =
+  | 'search_page' | 'firecrawl_search' | 'firecrawl_map'
+  | 'sitemap' | 'manual_seed' | 'cached_match';
+
+export type MatchStatus = 'confirmed' | 'pending' | 'rejected';
+
+export type DiscoveryRunStatus =
+  | 'completed' | 'partial' | 'failed' | 'blocked' | 'no_candidates';
+
+export interface CatalogCandidate {
+  id: string;
+  supplierId: string;
+  queryText: string;
+  normalizedQuery: string;
+  productUrl: string;
+  canonicalUrl: string | null;
+  urlHash: string;
+  source: SupplierProductSource;
+  status: CandidateStatus;
+  productName: string | null;
+  brand: string | null;
+  sku: string | null;
+  price: number | null;
+  currency: string | null;
+  priceBrl: number | null;
+  freight: number | null;
+  freightStatus: string | null;
+  totalBrl: number | null;
+  matchScore: number | null;
+  confidence: number | null;
+  evidenceText: string | null;
+  firstSeenAt: string;
+  updatedAt: string;
+}
+
+export interface CatalogMatch {
+  id: string;
+  supplierId: string;
+  candidateId: string;
+  queryText: string;
+  normalizedQuery: string;
+  matchStatus: MatchStatus;
+  matchScore: number | null;
+  confidence: number | null;
+  reason: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CatalogDiscoveryRun {
+  id: string;
+  supplierId: string;
+  queryText: string;
+  normalizedQuery: string;
+  source: SupplierProductSource;
+  status: DiscoveryRunStatus;
+  candidatesFound: number;
+  candidatesSaved: number;
+  errorMessage: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface CatalogCandidatesResponse {
+  ok: boolean;
+  supplierId: string;
+  query: string;
+  normalizedQuery: string;
+  count: number;
+  candidates: CatalogCandidate[];
+}
+
+export interface CatalogMatchesResponse {
+  ok: boolean;
+  supplierId: string;
+  query: string;
+  normalizedQuery: string;
+  count: number;
+  matches: CatalogMatch[];
+}
+
+export interface CatalogDiscoveryRunsResponse {
+  ok: boolean;
+  supplierId: string;
+  query: string;
+  normalizedQuery: string;
+  count: number;
+  runs: CatalogDiscoveryRun[];
+}
+
 export interface RatesPayload {
   usd: number | null;
   eur: number | null;
