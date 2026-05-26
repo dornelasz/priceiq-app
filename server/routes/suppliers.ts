@@ -7,6 +7,7 @@ import {
   ownSearchTestSchema,
   discoverCatalogSchema,
   processCatalogSchema,
+  catalogSearchSchema,
 } from '../lib/validators.js';
 import { autoConfigureSupplier } from '../suppliers/v2/autoConfig/index.js';
 import {
@@ -27,6 +28,11 @@ import {
   type CatalogProcessingInput,
   type CatalogProcessingResult,
 } from '../suppliers/v2/searchEngine/catalogProcessing/index.js';
+import {
+  runCatalogFirstSupplierSearch,
+  type CatalogSearchInput,
+  type CatalogSearchResult,
+} from '../suppliers/v2/searchEngine/catalogSearch/index.js';
 
 export interface SuppliersRoutesOptions {
   /** Injetável nos testes para evitar rede real. */
@@ -41,6 +47,10 @@ export interface SuppliersRoutesOptions {
   processCatalogCandidatesImpl?: (
     input: CatalogProcessingInput,
   ) => Promise<CatalogProcessingResult>;
+  /** Injetável nos testes para evitar rede real (Etapa 17). */
+  runCatalogSearchImpl?: (
+    input: CatalogSearchInput,
+  ) => Promise<CatalogSearchResult>;
 }
 
 export async function suppliersRoutes(
@@ -54,6 +64,9 @@ export async function suppliersRoutes(
   const runProcess =
     opts.processCatalogCandidatesImpl ??
     ((input: CatalogProcessingInput) => processCatalogCandidates(input));
+  const runCatalogSearch =
+    opts.runCatalogSearchImpl ??
+    ((input: CatalogSearchInput) => runCatalogFirstSupplierSearch(input));
   // GET /api/suppliers
   fastify.get('/api/suppliers', async () => {
     const items = await supplierService.list();
@@ -204,6 +217,54 @@ export async function suppliersRoutes(
       processed: result.processed,
       errors: result.errors,
       recommendation: result.recommendation,
+      attempts: sanitizeAttempts(result.attempts),
+    };
+  });
+
+  // POST /api/suppliers/:id/catalog-search — busca catalog-first (Etapa 17)
+  //
+  // Orquestra o fluxo completo: busca matches reutilizáveis → se existirem,
+  // atualiza-os; senão, roda discovery + processing. Retorna usefulResults
+  // (validated/partial com evidência + preço) e failures controlados.
+  // NÃO cria Search normal, NÃO salva SearchResult, NÃO mexe na cotação,
+  // NÃO usa IA/Gemini. Resposta sanitizada — sem HTML bruto e sem
+  // FIRECRAWL_API_KEY.
+  fastify.post('/api/suppliers/:id/catalog-search', async (req) => {
+    const { id } = idParamSchema.parse(req.params);
+    const {
+      query,
+      maxReusableMatches,
+      maxDiscoveryCandidates,
+      maxProcessingCandidates,
+      minMatchScore,
+    } = catalogSearchSchema.parse(req.body);
+    const supplier = await supplierService.get(id);
+    const result = await runCatalogSearch({
+      supplier,
+      query,
+      recipe: supplier.recipe ?? null,
+      maxReusableMatches,
+      maxDiscoveryCandidates,
+      maxProcessingCandidates,
+      minMatchScore,
+    });
+    return {
+      ok: true,
+      supplierId: result.supplierId,
+      supplierName: supplier.name,
+      query: result.query,
+      normalizedQuery: result.normalizedQuery,
+      status: result.status,
+      strategy: result.strategy,
+      reusedMatchesCount: result.reusedMatchesCount,
+      candidatesDiscovered: result.candidatesDiscovered,
+      candidatesProcessed: result.candidatesProcessed,
+      matchesCreated: result.matchesCreated,
+      usefulResults: result.usefulResults,
+      failures: result.failures,
+      diagnostics: result.diagnostics,
+      recommendation: result.recommendation,
+      errors: result.errors,
       attempts: sanitizeAttempts(result.attempts),
     };
   });

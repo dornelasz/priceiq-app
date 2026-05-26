@@ -61,6 +61,17 @@ export const processCatalogSchema = z.object({
 });
 export type ProcessCatalogInput = z.infer<typeof processCatalogSchema>;
 
+// Rota catalog-first (Etapa 17). Orquestra discovery + processing em um único
+// passo, reutilizando matches já confirmados quando disponíveis.
+export const catalogSearchSchema = z.object({
+  query: z.string().min(1, 'query é obrigatória').max(300),
+  maxReusableMatches: z.coerce.number().int().min(1).max(50).optional(),
+  maxDiscoveryCandidates: z.coerce.number().int().min(1).max(100).optional(),
+  maxProcessingCandidates: z.coerce.number().int().min(1).max(50).optional(),
+  minMatchScore: z.coerce.number().int().min(0).max(100).optional(),
+});
+export type CatalogSearchSchemaInput = z.infer<typeof catalogSearchSchema>;
+
 // ─── Searches ────────────────────────────────────────────
 
 export const searchCreateSchema = z.object({
