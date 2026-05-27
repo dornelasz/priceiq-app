@@ -1,0 +1,77 @@
+# ════════════════════════════════════════════════════════════════
+# AI Market Radar — Postgres + app (Next) + worker (coleta) + migrate
+#   docker compose up -d --build
+#   docker compose run --rm app npm run db:seed   # cadastra fontes
+#   docker compose logs -f worker
+# GEMINI_API_KEY é opcional (passe via ambiente do host ou um arquivo .env).
+# ════════════════════════════════════════════════════════════════
+name: ai-market-radar
+
+x-app-env: &app-env
+  DATABASE_URL: postgresql://radar:radar@postgres:5432/radar?schema=public
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.0-flash}
+  TZ: ${TZ:-America/Sao_Paulo}
+  NODE_ENV: production
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: radar-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: radar
+      POSTGRES_PASSWORD: radar
+      POSTGRES_DB: radar
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U radar"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    command: ["npx", "prisma", "migrate", "deploy"]
+    environment:
+      <<: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build: .
+    container_name: radar-app
+    command: ["npm", "run", "start"]
+    environment:
+      <<: *app-env
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build: .
+    container_name: radar-worker
+    command: ["npm", "run", "worker"]
+    environment:
+      <<: *app-env
+      WORKER_FETCH_CRON: ${WORKER_FETCH_CRON:-*/15 * * * *}
+      WORKER_DIGEST_CRON: ${WORKER_DIGEST_CRON:-0 6 * * *}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
+    name: radar-pgdata
