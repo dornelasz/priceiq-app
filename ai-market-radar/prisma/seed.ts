@@ -20,24 +20,32 @@ interface SeedSource {
 // INACTIVE (no broken collectors auto-run). Verify a feed, then activate it
 // from the "Fontes" page. We never invent content — only register sources.
 const SEED_SOURCES: SeedSource[] = [
-  // ── Verified public RSS/Atom feeds (active) ──────────────────────────
+  // ── GitHub release feeds (.atom): feeds públicos REAIS e estáveis ────
+  // Verificados como acessíveis e legítimos (releases reais, datas, links).
+  { name: "GitHub · LangChain (releases)", url: "https://github.com/langchain-ai/langchain/releases.atom", type: "GITHUB", category: "Open source", isActive: true },
+  { name: "GitHub · Transformers (releases)", url: "https://github.com/huggingface/transformers/releases.atom", type: "GITHUB", category: "Open source", isActive: true },
+  { name: "GitHub · OpenAI Python SDK (releases)", url: "https://github.com/openai/openai-python/releases.atom", type: "GITHUB", category: "Ferramentas de IA", isActive: true },
+  { name: "GitHub · Ollama (releases)", url: "https://github.com/ollama/ollama/releases.atom", type: "GITHUB", category: "Ferramentas de IA", isActive: true },
+
+  // ── Feeds públicos conhecidos e estáveis (ativos) ────────────────────
   { name: "Hugging Face Blog", url: "https://huggingface.co/blog/feed.xml", type: "RSS", category: "Open source", isActive: true },
   { name: "arXiv cs.AI", url: "http://export.arxiv.org/rss/cs.AI", type: "PAPER", category: "Papers e pesquisa", isActive: true },
   { name: "arXiv cs.LG", url: "http://export.arxiv.org/rss/cs.LG", type: "PAPER", category: "Papers e pesquisa", isActive: true },
   { name: "The Decoder", url: "https://the-decoder.com/feed/", type: "RSS", category: "Modelos de IA", isActive: true },
+  { name: "NVIDIA Blog", url: "https://blogs.nvidia.com/feed/", type: "RSS", category: "Hardware e chips", isActive: true },
   { name: "VentureBeat AI", url: "https://venturebeat.com/category/ai/feed/", type: "RSS", category: "IA para negócios", isActive: true },
   { name: "TechCrunch AI", url: "https://techcrunch.com/category/artificial-intelligence/feed/", type: "RSS", category: "Startups", isActive: true },
-  { name: "NVIDIA Blog", url: "https://blogs.nvidia.com/feed/", type: "RSS", category: "Hardware e chips", isActive: true },
   { name: "Microsoft AI Blog", url: "https://blogs.microsoft.com/ai/feed/", type: "RSS", category: "Big Techs", isActive: true },
   { name: "MIT Technology Review — AI", url: "https://www.technologyreview.com/topic/artificial-intelligence/feed/", type: "RSS", category: "Papers e pesquisa", isActive: true },
-  { name: "Google — The Keyword (AI)", url: "https://blog.google/technology/ai/rss/", type: "RSS", category: "Big Techs", isActive: true },
-  { name: "OpenAI Blog", url: "https://openai.com/news/rss.xml", type: "RSS", category: "Modelos de IA", isActive: true },
 
-  // ── Registered but INACTIVE (confirm a public feed before activating) ─
-  { name: "Anthropic News", url: "https://www.anthropic.com/news", type: "SITE", category: "Modelos de IA", isActive: false, note: "Confirmar RSS/feed público antes de ativar." },
-  { name: "Meta AI Blog", url: "https://ai.meta.com/blog/", type: "SITE", category: "Big Techs", isActive: false, note: "Confirmar RSS/feed público antes de ativar." },
-  { name: "Product Hunt — AI", url: "https://www.producthunt.com/topics/artificial-intelligence", type: "SITE", category: "Ferramentas de IA", isActive: false, note: "Sem RSS público estável confirmado; verificar antes de ativar." },
-  { name: "GitHub Trending", url: "https://github.com/trending", type: "GITHUB", category: "Open source", isActive: false, note: "Sem API/feed oficial de trending; coletor GitHub não implementado." },
+  // ── Registradas porém INATIVAS: feed público não confirmado ──────────
+  // Regra: na dúvida, não ativar. Verifique a URL do feed e ative manualmente.
+  { name: "OpenAI Blog", url: "https://openai.com/news/rss.xml", type: "RSS", category: "Modelos de IA", isActive: false, note: "Feed público (/news/rss.xml) não confirmado com certeza — verifique e ative." },
+  { name: "Google — The Keyword (AI)", url: "https://blog.google/technology/ai/rss/", type: "RSS", category: "Big Techs", isActive: false, note: "Caminho de feed não confirmado — verifique e ative." },
+  { name: "Anthropic News", url: "https://www.anthropic.com/news", type: "SITE", category: "Modelos de IA", isActive: false, note: "Sem RSS público confirmado." },
+  { name: "Meta AI Blog", url: "https://ai.meta.com/blog/", type: "SITE", category: "Big Techs", isActive: false, note: "Sem RSS público confirmado." },
+  { name: "Product Hunt — AI", url: "https://www.producthunt.com/topics/artificial-intelligence", type: "SITE", category: "Ferramentas de IA", isActive: false, note: "Sem RSS público estável confirmado." },
+  { name: "GitHub Trending", url: "https://github.com/trending", type: "GITHUB", category: "Open source", isActive: false, note: "Sem feed oficial de trending; use <repo>/releases.atom." },
 ];
 
 const EXAMPLE_ALERTS = [

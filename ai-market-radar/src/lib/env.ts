@@ -39,7 +39,13 @@ export const env = {
     return str("TZ", "America/Sao_Paulo");
   },
   get defaultFetchIntervalMinutes(): number {
-    return int("DEFAULT_FETCH_INTERVAL_MINUTES", 60);
+    // Canonical name is FETCH_INTERVAL_MINUTES; keep the older name as fallback.
+    const raw = process.env.FETCH_INTERVAL_MINUTES ?? process.env.DEFAULT_FETCH_INTERVAL_MINUTES;
+    const n = raw ? Number.parseInt(raw, 10) : NaN;
+    return Number.isFinite(n) ? n : 60;
+  },
+  get appUrl(): string {
+    return str("NEXT_PUBLIC_APP_URL", "http://localhost:3000");
   },
   get analyzeOnFetch(): boolean {
     return bool("ANALYZE_ON_FETCH", true);

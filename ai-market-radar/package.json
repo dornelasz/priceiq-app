@@ -13,10 +13,12 @@
     "test:watch": "vitest",
     "worker": "tsx src/worker/index.ts",
     "worker:dev": "tsx watch src/worker/index.ts",
+    "fetch:run": "tsx src/worker/runOnce.ts",
     "fetch:once": "tsx src/worker/runOnce.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:deploy": "prisma migrate deploy",
+    "prisma:seed": "tsx prisma/seed.ts",
     "db:seed": "tsx prisma/seed.ts"
   },
   "prisma": {

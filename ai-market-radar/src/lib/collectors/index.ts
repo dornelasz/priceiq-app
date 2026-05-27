@@ -40,13 +40,23 @@ export async function collectSource(
     case "OTHER":
       return { items: await collectWebPage(input), warnings: [] };
 
-    case "GITHUB":
+    case "GITHUB": {
+      // GitHub exposes real, public Atom feeds (e.g. <repo>/releases.atom,
+      // <repo>/commits.atom, <user>.atom). Those are reliable feeds, so we
+      // parse them with the RSS/Atom collector. Non-feed pages (e.g. /trending)
+      // have no official feed — we don't run a broken collector for those.
+      const lower = source.url.toLowerCase();
+      const isFeed = lower.endsWith(".atom") || lower.endsWith(".xml") || lower.includes("/releases.atom");
+      if (isFeed) {
+        return { items: await collectRss(input), warnings: [] };
+      }
       return {
         items: [],
         warnings: [
-          "Coletor GitHub não implementado: cadastre o RSS/Atom público do repositório (ex.: releases.atom) ou use uma fonte com feed estável.",
+          "Coletor GitHub: cadastre um feed .atom público (ex.: <repo>/releases.atom). Páginas como /trending não têm feed oficial.",
         ],
       };
+    }
 
     default:
       return {
