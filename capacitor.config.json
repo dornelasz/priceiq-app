@@ -2,5 +2,10 @@
   "appId": "com.marco.priceiq",
   "appName": "PriceIQ",
   "webDir": "www",
-  "bundledWebRuntime": false
+  "bundledWebRuntime": false,
+  "server": {
+    "url": "https://COLOQUE-AQUI-A-URL-DO-FRONTEND-VERCEL",
+    "androidScheme": "https",
+    "cleartext": false
+  }
 }

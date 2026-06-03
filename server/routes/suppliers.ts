@@ -1,6 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { supplierService } from '../services/supplierService.js';
-import { supplierCreateSchema, supplierUpdateSchema, idParamSchema } from '../lib/validators.js';
+import {
+  supplierCreateSchema,
+  supplierUpdateSchema,
+  idParamSchema,
+} from '../lib/validators.js';
+import { autoConfigureSupplier } from '../suppliers/v2/autoConfig/index.js';
 
 export async function suppliersRoutes(fastify: FastifyInstance): Promise<void> {
   // GET /api/suppliers
@@ -30,5 +35,18 @@ export async function suppliersRoutes(fastify: FastifyInstance): Promise<void> {
     await supplierService.delete(id);
     reply.code(204).send();
     return reply;
+  });
+
+  // POST /api/suppliers/:id/auto-configure — V2 Fase C
+  //
+  // Tenta configurar o fornecedor sozinho (detectar plataforma, URL de
+  // busca, padrão de página de produto, estratégia de extração) e salvar
+  // a receita correspondente. NÃO substitui o motor de busca atual.
+  // NotFoundError (do supplierService.get) sobe para o errorHandler global
+  // que devolve 404 automaticamente; outros erros viram 500 controlados.
+  fastify.post('/api/suppliers/:id/auto-configure', async (req) => {
+    const { id } = idParamSchema.parse(req.params);
+    const result = await autoConfigureSupplier(id);
+    return result;
   });
 }

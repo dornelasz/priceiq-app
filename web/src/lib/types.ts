@@ -7,6 +7,59 @@ export type SupplierType = 'Nacional' | 'Internacional';
 export type ExtractionMode = 'jina_reader' | 'playwright' | 'direct_api';
 export type SearchStatus = 'pending' | 'running' | 'completed' | 'partial_failed' | 'failed';
 
+// ─── V2 — Status do fornecedor e receita (Fase B do Universal Adapter V2) ──
+//
+// Estes tipos refletem os contratos definidos em server/suppliers/v2/types.ts.
+// São opcionais no `Supplier` enquanto a UI ainda não consome os campos —
+// a tela de fornecedores será atualizada em fase posterior.
+
+export type SupplierCertificationStatus =
+  | 'unconfigured'
+  | 'auto_configuring'
+  | 'certified'
+  | 'needs_guided_setup'
+  | 'blocked'
+  | 'requires_login'
+  | 'unsupported'
+  | 'failed';
+
+export type ExtractionStrategy =
+  | 'json_ld'
+  | 'schema_org'
+  | 'meta_tags'
+  | 'script_json'
+  | 'next_data'
+  | 'dom'
+  | 'visual_heuristic'
+  | 'jina_fallback'
+  | 'playwright_fallback'
+  | 'guided_selector'
+  | 'specialized_adapter';
+
+export interface SupplierRecipe {
+  id?: string;
+  supplierId: string;
+  status: SupplierCertificationStatus;
+  platformDetected?: string | null;
+  searchUrlTemplate?: string | null;
+  productUrlPatterns?: string[];
+  extractionStrategy?: ExtractionStrategy | null;
+  titleSelector?: string | null;
+  priceSelector?: string | null;
+  currencySelector?: string | null;
+  imageSelector?: string | null;
+  availabilitySelector?: string | null;
+  jsonLdEnabled?: boolean;
+  jsonPaths?: Record<string, unknown> | null;
+  requiresJs?: boolean;
+  requiresBrowser?: boolean;
+  confidence?: number | null;
+  lastTestedAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastError?: string | null;
+  configJson?: Record<string, unknown> | null;
+}
+
 export interface Supplier {
   id: string;
   name: string;
@@ -21,6 +74,11 @@ export interface Supplier {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  // ─── V2 — Fase B (opcionais para compat com clientes antigos) ──────────
+  certificationStatus?: SupplierCertificationStatus;
+  setupStatus?: SupplierCertificationStatus;
+  autoConfiguredAt?: string | null;
+  recipe?: SupplierRecipe | null;
 }
 
 export interface SupplierInput {

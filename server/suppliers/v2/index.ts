@@ -10,9 +10,9 @@
  *     isValidatedUniversalSearchResult,
  *   } from '../suppliers/v2/index.js';
  *
- * Esta camada é APENAS contratos/validações. Nenhum import daqui dispara
- * I/O, scraping, banco ou cotação. Pode ser usada com segurança em qualquer
- * arquivo do servidor.
+ * A partir da Fase D, este barrel também expõe o Recipe Runner e os
+ * extractors estruturados. Importar deles ainda é seguro: o Runner só
+ * dispara I/O quando explicitamente chamado, e os extractors são puros.
  */
 
 export type {
@@ -51,3 +51,45 @@ export {
   isValidatedUniversalSearchResult,
   canConfirmFinalTotal,
 } from './validators.js';
+
+// ─── Fase D — Recipe Runner + extractors estruturados ─────────────────
+export {
+  createDefaultFetcher,
+  DEFAULT_FETCH_TIMEOUT_MS,
+  type Fetcher,
+  type FetcherResult,
+  type FetcherStatus,
+} from './fetching/index.js';
+
+export {
+  runSupplierRecipe,
+  validateRecipe,
+  extractCandidates,
+  buildStatusResult,
+  buildValidatedResult,
+  buildMismatchResult,
+  type RunSupplierRecipeInput,
+  type RecipeValidationResult,
+  type CandidateUrl,
+} from './recipeRunner/index.js';
+
+export {
+  EXTRACTORS_IN_ORDER,
+  extractFromJsonLd,
+  extractFromMetaTags,
+  extractFromNextData,
+  extractFromScriptJson,
+  extractFromDom,
+  detectFreeShipping,
+  type ExtractedProductData,
+  type RegisteredExtractor,
+  type ExtractorFn,
+} from './extractors/index.js';
+
+export { matchProduct, type MatchResult } from './matching/index.js';
+
+// NOTA: módulos que tocam em DB/I/O (autoConfig, integration) NÃO são
+// re-exportados aqui para manter este barrel seguro de importar sem
+// `DATABASE_URL` definido. Importe-os diretamente dos sub-paths:
+//   import { autoConfigureSupplier } from '.../suppliers/v2/autoConfig/index.js';
+//   import { mapUniversalResultToInsertPayload } from '.../suppliers/v2/integration/index.js';

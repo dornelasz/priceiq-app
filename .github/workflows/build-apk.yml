@@ -29,18 +29,56 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Prepare web files
+      - name: Prepare offline shell for Capacitor
+        # O APK abre `capacitor.config.json -> server.url` (URL da Vercel)
+        # como WebView remoto. O `www/` é EXIGIDO pelo Capacitor como
+        # fallback offline — gravamos aqui um shell mínimo que NUNCA é o
+        # `index.html` legado. Se a Internet falhar antes da URL remota
+        # carregar, o usuário vê apenas uma tela de "Carregando".
         run: |
           mkdir -p www
-          if [ -f index.html ]; then
-            cp index.html www/index.html
-          fi
+          cat > www/index.html << 'HTML'
+          <!doctype html>
+          <html lang="pt-BR">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <title>PriceIQ</title>
+            <style>
+              body {
+                font-family: system-ui, -apple-system, sans-serif;
+                background: #0B0F17;
+                color: #fff;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                height: 100vh;
+                margin: 0;
+                text-align: center;
+                padding: 24px;
+                box-sizing: border-box;
+              }
+              h1 { font-size: 24px; margin: 0 0 12px; }
+              p  { color: #8896AA; font-size: 14px; margin: 4px 0; }
+            </style>
+          </head>
+          <body>
+            <h1>PriceIQ</h1>
+            <p>Carregando…</p>
+            <p>Verifique sua conexão com a Internet caso esta tela permaneça.</p>
+          </body>
+          </html>
+          HTML
+
           if [ ! -f www/index.html ]; then
-            echo "ERRO: www/index.html não encontrado"
+            echo "ERRO: shell offline www/index.html não foi gerado"
             ls -la
             ls -la www || true
             exit 1
           fi
+          echo "✓ Shell offline gerado em www/index.html ($(wc -c < www/index.html) bytes)"
+          echo "✓ APK abrirá server.url do capacitor.config.json em runtime."
 
       - name: Add Android platform
         run: |
