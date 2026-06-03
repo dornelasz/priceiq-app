@@ -60,10 +60,96 @@ export interface ExtractCandidatesInput {
   searchPageUrl: string;
   baseUrl?: string;
   maxCandidates?: number;
+  contentType?: 'html' | 'markdown';
 }
 
 export interface ExtractCandidatesResult {
   candidates: CandidateUrl[];
+}
+
+function extractFromHtml(
+  html: string,
+  searchPageUrl: string,
+  map: Map<string, CandidateUrl>,
+): void {
+  const linkRx = /<a\b[^>]*href=["']?([^"' >]+)["']?[^>]*>([\s\S]*?)<\/a>/gi;
+  let m: RegExpExecArray | null;
+
+  while ((m = linkRx.exec(html)) !== null) {
+    const raw = m[1];
+    if (!raw || raw.startsWith('#') || raw.startsWith('javascript:')) continue;
+    const text = (m[2] ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+    let abs: string;
+    try {
+      abs = new URL(raw, searchPageUrl).toString();
+    } catch {
+      continue;
+    }
+
+    scoreAndAdd(abs, text, map);
+  }
+}
+
+function extractFromMarkdown(
+  md: string,
+  searchPageUrl: string,
+  map: Map<string, CandidateUrl>,
+): void {
+  const mdLinkRx = /\[([^\]]*)\]\(([^)]+)\)/g;
+  let m: RegExpExecArray | null;
+
+  while ((m = mdLinkRx.exec(md)) !== null) {
+    const text = (m[1] ?? '').trim();
+    const raw = (m[2] ?? '').trim();
+    if (!raw || raw.startsWith('#')) continue;
+
+    let abs: string;
+    try {
+      abs = /^https?:\/\//i.test(raw) ? raw : new URL(raw, searchPageUrl).toString();
+    } catch {
+      continue;
+    }
+
+    scoreAndAdd(abs, text, map);
+  }
+}
+
+function scoreAndAdd(abs: string, text: string, map: Map<string, CandidateUrl>): void {
+  if (NEGATIVE_PATTERNS.some((p) => p.test(abs))) return;
+
+  for (const pat of POSITIVE_PATTERNS) {
+    if (pat.rx.test(abs)) {
+      const existing = map.get(abs);
+      if (!existing || existing.confidence < pat.score) {
+        map.set(abs, {
+          url: abs,
+          text: text || undefined,
+          confidence: pat.score,
+          reason: pat.reason,
+        });
+      }
+      return;
+    }
+  }
+
+  // URLs sem match em POSITIVE_PATTERNS mas que parecem ser de produto
+  // (têm path com slug longo e não são negativas) — confiança baixa
+  try {
+    const u = new URL(abs);
+    const pathParts = u.pathname.split('/').filter(Boolean);
+    if (pathParts.length >= 2 && pathParts.some((p) => p.length > 10)) {
+      const existing = map.get(abs);
+      if (!existing) {
+        map.set(abs, {
+          url: abs,
+          text: text || undefined,
+          confidence: 30,
+          reason: 'long-slug',
+        });
+      }
+    }
+  } catch { /* ignore */ }
 }
 
 export function extractCandidates(
@@ -71,37 +157,13 @@ export function extractCandidates(
 ): ExtractCandidatesResult {
   const max = input.maxCandidates ?? 5;
   const map = new Map<string, CandidateUrl>();
-  const linkRx = /<a\b[^>]*href=["']?([^"' >]+)["']?[^>]*>([\s\S]*?)<\/a>/gi;
-  let m: RegExpExecArray | null;
+  const content = input.searchPageHtml;
+  const isMarkdown = input.contentType === 'markdown';
 
-  while ((m = linkRx.exec(input.searchPageHtml)) !== null) {
-    const raw = m[1];
-    if (!raw || raw.startsWith('#') || raw.startsWith('javascript:')) continue;
-    const text = (m[2] ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-
-    let abs: string;
-    try {
-      abs = new URL(raw, input.searchPageUrl).toString();
-    } catch {
-      continue;
-    }
-
-    if (NEGATIVE_PATTERNS.some((p) => p.test(abs))) continue;
-
-    for (const pat of POSITIVE_PATTERNS) {
-      if (pat.rx.test(abs)) {
-        const existing = map.get(abs);
-        if (!existing || existing.confidence < pat.score) {
-          map.set(abs, {
-            url: abs,
-            text: text || undefined,
-            confidence: pat.score,
-            reason: pat.reason,
-          });
-        }
-        break;
-      }
-    }
+  if (isMarkdown) {
+    extractFromMarkdown(content, input.searchPageUrl, map);
+  } else {
+    extractFromHtml(content, input.searchPageUrl, map);
   }
 
   return {

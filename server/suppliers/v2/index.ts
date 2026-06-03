@@ -59,6 +59,9 @@ export {
   type Fetcher,
   type FetcherResult,
   type FetcherStatus,
+  type FetcherOptions,
+  type ContentType,
+  type FetchSource,
 } from './fetching/index.js';
 
 export {
@@ -75,11 +78,13 @@ export {
 
 export {
   EXTRACTORS_IN_ORDER,
+  MARKDOWN_EXTRACTOR,
   extractFromJsonLd,
   extractFromMetaTags,
   extractFromNextData,
   extractFromScriptJson,
   extractFromDom,
+  extractFromMarkdown,
   detectFreeShipping,
   type ExtractedProductData,
   type RegisteredExtractor,

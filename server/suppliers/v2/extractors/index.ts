@@ -15,6 +15,7 @@ import { extractFromMetaTags } from './metaTagExtractor.js';
 import { extractFromNextData } from './nextDataExtractor.js';
 import { extractFromScriptJson } from './scriptJsonExtractor.js';
 import { extractFromDom } from './domExtractor.js';
+import { extractFromMarkdown } from './markdownExtractor.js';
 
 export type ExtractorFn = (
   html: string,
@@ -34,12 +35,18 @@ export const EXTRACTORS_IN_ORDER: RegisteredExtractor[] = [
   { strategy: 'dom', extract: extractFromDom },
 ];
 
+export const MARKDOWN_EXTRACTOR: RegisteredExtractor = {
+  strategy: 'jina_fallback',
+  extract: extractFromMarkdown,
+};
+
 export {
   extractFromJsonLd,
   extractFromMetaTags,
   extractFromNextData,
   extractFromScriptJson,
   extractFromDom,
+  extractFromMarkdown,
 };
 export { detectFreeShipping, type FreightHintResult } from './freightHints.js';
 export type { ExtractedProductData } from './types.js';

@@ -34,6 +34,7 @@ import type { ResultStatus } from '../lib/resultStatus.js';
 import { autoConfigureSupplier } from '../suppliers/v2/autoConfig/index.js';
 import { runSupplierRecipe } from '../suppliers/v2/recipeRunner/index.js';
 import { mapUniversalResultToInsertPayload } from '../suppliers/v2/integration/index.js';
+import { createDefaultFetcher } from '../suppliers/v2/fetching/index.js';
 import type {
   SupplierRecipe,
   UniversalSearchResult,
@@ -180,6 +181,12 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
   const deps = input.deps ?? {};
   const normalizedQuery = matchingService.cacheKey(query);
 
+  const defaultFetcher = deps.fetcher ?? createDefaultFetcher({
+    jinaEnabled: config.JINA_ENABLED,
+    firecrawlEnabled: config.FIRECRAWL_ENABLED,
+    firecrawlApiKey: config.FIRECRAWL_API_KEY,
+  });
+
   const getRecipe = deps.getRecipe ?? ((id) => supplierService.getRecipe(id));
   const doAutoConfigure = deps.autoConfigure ?? autoConfigureSupplier;
   const doRunRecipe = deps.runRecipe ?? runSupplierRecipe;
@@ -274,7 +281,7 @@ export async function runSearchWorker(input: WorkerInput): Promise<void> {
         supplier: sup,
         recipe: recipe!,
         query,
-        ...(deps.fetcher ? { fetcher: deps.fetcher } : {}),
+        fetcher: defaultFetcher,
         timeoutMs: config.SUPPLIER_TIMEOUT_MS,
       });
 

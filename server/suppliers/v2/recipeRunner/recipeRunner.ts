@@ -2,25 +2,13 @@
  * Recipe Runner — executa uma SupplierRecipe certificada e devolve um
  * UniversalSearchResult validado (ou um status controlado de falha).
  *
+ * A partir desta versão, suporta conteúdo HTML (fetch direto) e markdown
+ * (Jina/Firecrawl). Quando o conteúdo é markdown, usa o markdownExtractor
+ * em vez dos extractors de HTML (JSON-LD, meta tags, etc.).
+ *
  * Princípios absolutos:
- *  - NÃO usa Jina, NÃO usa Playwright, NÃO usa Gemini.
- *  - NÃO importa scrapers antigos (server/scrapers/*).
- *  - NÃO chama priceSearchWorker.
- *  - NÃO chama searchService.
  *  - Frete desconhecido NUNCA vira 0 — fica `not_available`.
  *  - Nada é inventado: sem produto+preço+evidência → falha controlada.
- *
- * Fluxo:
- *   1. validateRecipe → needs_supplier_setup se inválida
- *   2. fetch busca → mapeia blocked/login/error/timeout para status V2
- *   3. extractCandidates → not_found se vazio
- *   4. para cada candidato (até maxCandidates):
- *        fetch produto
- *        rodar extractors em ordem (preferida primeiro, depois fallbacks)
- *        validar produto+preço+nome+evidence
- *        matchProduct → mismatch ou validated
- *   5. retorna primeiro validated; senão produto_mismatch/price_not_found/
- *      invalid_link/not_found conforme observado.
  */
 import type {
   ExtractionStrategy,
@@ -33,9 +21,11 @@ import {
   createDefaultFetcher,
   DEFAULT_FETCH_TIMEOUT_MS,
   type Fetcher,
+  type ContentType,
 } from '../fetching/contentFetcher.js';
 import {
   EXTRACTORS_IN_ORDER,
+  MARKDOWN_EXTRACTOR,
   detectFreeShipping,
   type ExtractedProductData,
   type RegisteredExtractor,
@@ -56,7 +46,6 @@ export interface RunSupplierRecipeInput {
   fetcher?: Fetcher;
   timeoutMs?: number;
   maxCandidates?: number;
-  /** Match score mínimo para aceitar como validated (default 50). */
   minMatchScore?: number;
 }
 
@@ -91,8 +80,6 @@ function fetchStatusToResultStatus(
     return { status: 'blocked', message: errorMessage ?? 'fornecedor bloqueou acesso' };
   }
   if (status === 'requires_login') {
-    // SearchResultStatusV2 não tem requires_login — mapeamos para 'blocked'
-    // (semanticamente: o fornecedor está impedindo acesso público ao conteúdo).
     return {
       status: 'blocked',
       message: errorMessage ?? 'fornecedor exige login para acesso',
@@ -101,7 +88,6 @@ function fetchStatusToResultStatus(
   if (status === 'not_found') {
     return { status: 'not_found', message: errorMessage ?? 'página não encontrada' };
   }
-  // 'error'
   const isTimeout = /timeout|tempo esgotado|abort/i.test(errorMessage ?? '');
   return {
     status: isTimeout ? 'timeout' : 'error',
@@ -121,26 +107,49 @@ function reorderExtractors(
 }
 
 function runExtractors(
-  html: string,
+  content: string,
   candidateUrl: string,
   preferred: ExtractionStrategy | null | undefined,
+  contentType: ContentType,
 ): ExtractedProductData | null {
+  if (contentType === 'markdown') {
+    return MARKDOWN_EXTRACTOR.extract(content, candidateUrl);
+  }
+
   let bestPartial: ExtractedProductData | null = null;
   for (const ex of reorderExtractors(preferred)) {
-    const got = ex.extract(html, candidateUrl);
+    const got = ex.extract(content, candidateUrl);
     if (!got) continue;
     if (
       got.productName &&
       typeof got.price === 'number' &&
       got.price > 0
     ) {
-      return got; // completo — pode parar
+      return got;
     }
     if (!bestPartial || got.confidence > bestPartial.confidence) {
       bestPartial = got;
     }
   }
   return bestPartial;
+}
+
+function detectFreeShippingFromContent(
+  content: string,
+  contentType: ContentType,
+): { isFreeShipping: boolean; evidence: string | null } {
+  if (contentType === 'markdown') {
+    const FREE_RX = /\b(?:frete\s*gr[áa]tis|envio\s*gr[áa]tis|free\s*shipping|free\s*delivery)\b/i;
+    const m = content.match(FREE_RX);
+    if (m && m[0]) {
+      const idx = m.index ?? 0;
+      const start = Math.max(0, idx - 40);
+      const end = Math.min(content.length, idx + m[0].length + 40);
+      return { isFreeShipping: true, evidence: content.slice(start, end).trim() };
+    }
+    return { isFreeShipping: false, evidence: null };
+  }
+  return detectFreeShipping(content);
 }
 
 export async function runSupplierRecipe(
@@ -171,15 +180,49 @@ export async function runSupplierRecipe(
       return buildStatusResult(mapped.status, mapped.message);
     }
 
+    const searchContent = searchRes.content ?? searchRes.html;
+    const searchContentType = searchRes.contentType ?? 'html';
+
     // ─── 3. Extrair candidatos ───────────────────────────────────────
     const { candidates } = extractCandidates({
-      searchPageHtml: searchRes.html,
+      searchPageHtml: searchContent,
       searchPageUrl: searchUrl,
       baseUrl,
       maxCandidates,
+      contentType: searchContentType,
     });
 
     if (candidates.length === 0) {
+      // Sem candidatos de link — tentar extração direta do conteúdo da busca
+      const directExtracted = runExtractors(
+        searchContent,
+        searchRes.finalUrl ?? searchUrl,
+        input.recipe.extractionStrategy,
+        searchContentType,
+      );
+      if (directExtracted?.productName && typeof directExtracted.price === 'number' && directExtracted.price > 0 && directExtracted.currency) {
+        const match = matchProduct(input.query, directExtracted.productName);
+        if (!match.isAccessory && match.score >= minMatchScore) {
+          const freightHint = detectFreeShippingFromContent(searchContent, searchContentType);
+          const freight = freightHint.isFreeShipping
+            ? { state: 'free_confirmed' as const, value: 0, evidence: freightHint.evidence }
+            : { state: 'not_available' as const, value: null, evidence: null };
+          return buildValidatedResult({
+            productName: directExtracted.productName,
+            price: directExtracted.price,
+            currency: directExtracted.currency.toUpperCase(),
+            productUrl: searchRes.finalUrl ?? searchUrl,
+            evidenceText: directExtracted.evidenceText ?? '',
+            sourceUrl: searchRes.finalUrl ?? searchUrl,
+            strategy: directExtracted.strategy,
+            matchScore: match.score,
+            confidence: directExtracted.confidence,
+            available: directExtracted.available ?? null,
+            image: directExtracted.image ?? null,
+            freight,
+          });
+        }
+      }
       return buildStatusResult(
         'not_found',
         'sem candidatos a produto na página de busca',
@@ -196,20 +239,22 @@ export async function runSupplierRecipe(
       const prodRes = await fetcher.fetchText(candidate.url, { timeoutMs });
 
       if (prodRes.status === 'blocked' || prodRes.status === 'requires_login') {
-        // Não interrompe a iteração — outro candidato pode estar acessível.
         continue;
       }
       if (prodRes.status !== 'ok' || !prodRes.html) continue;
       sawCandidateFetched = true;
 
+      const prodContent = prodRes.content ?? prodRes.html;
+      const prodContentType = prodRes.contentType ?? 'html';
+
       const extracted = runExtractors(
-        prodRes.html,
+        prodContent,
         prodRes.finalUrl ?? candidate.url,
         input.recipe.extractionStrategy,
+        prodContentType,
       );
       if (!extracted) continue;
 
-      // Sem nome → não há produto identificado
       if (
         !extracted.productName ||
         extracted.productName.trim() === '' ||
@@ -217,12 +262,10 @@ export async function runSupplierRecipe(
       ) {
         continue;
       }
-      // Sem preço válido → produto sem preço (price_not_found candidato)
       if (typeof extracted.price !== 'number' || extracted.price <= 0) {
         sawProductWithoutPrice = true;
         continue;
       }
-      // Sem moeda → também é falha de extração
       if (!extracted.currency || extracted.currency.trim() === '') {
         sawProductWithoutPrice = true;
         continue;
@@ -248,8 +291,8 @@ export async function runSupplierRecipe(
         continue;
       }
 
-      // ─── 4f. Frete: só `free_confirmed` quando há evidência clara ─
-      const freightHint = detectFreeShipping(prodRes.html);
+      // ─── 4f. Frete ────────────────────────────────────────────────
+      const freightHint = detectFreeShippingFromContent(prodContent, prodContentType);
       const freight = freightHint.isFreeShipping
         ? {
             state: 'free_confirmed' as const,
@@ -262,7 +305,6 @@ export async function runSupplierRecipe(
             evidence: null,
           };
 
-      // ─── Resultado validated ─────────────────────────────────────
       return buildValidatedResult({
         productName: extracted.productName,
         price: extracted.price,
@@ -288,13 +330,11 @@ export async function runSupplierRecipe(
       );
     }
     if (!sawCandidateFetched) {
-      // Todos os candidatos vieram blocked/login/erro — não conseguimos abrir nenhum
       return buildStatusResult(
         'blocked',
         'todos os candidatos a produto foram bloqueados',
       );
     }
-    // Última possibilidade: links não validáveis como produto
     return buildStatusResult(
       'invalid_link',
       'candidatos identificados mas nenhum se confirmou como produto',

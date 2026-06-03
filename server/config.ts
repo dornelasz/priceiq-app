@@ -43,6 +43,21 @@ const envSchema = z.object({
     .default('true')
     .transform((v) => v === 'true' || v === '1' || v === 'yes'),
 
+  // ─── Jina Reader (scraping via markdown) ──────────────
+  // Ativado por padrão. Free tier, sem API key.
+  JINA_ENABLED: z
+    .string()
+    .default('true')
+    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
+
+  // ─── Firecrawl (scraping via API) ──────────────
+  // Desativado por padrão. Requer API key.
+  FIRECRAWL_ENABLED: z
+    .string()
+    .default('false')
+    .transform((v) => v === 'true' || v === '1' || v === 'yes'),
+  FIRECRAWL_API_KEY: z.string().default(''),
+
   // ─── Playwright (último fallback, opcional) ──────────────
   // Desligado por padrão. Para usar:
   //   cd server && npm install playwright && npx playwright install chromium
